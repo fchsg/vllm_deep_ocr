@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import re
 import os
@@ -24,6 +25,13 @@ from config import MODEL_PATH, INPUT_PATH, OUTPUT_PATH, PROMPT, CROP_MODE
 
 ModelRegistry.register_model("DeepseekOCRForCausalLM", DeepseekOCRForCausalLM)
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run DeepSeek OCR inference (vLLM).")
+    parser.add_argument("-i", "--input", type=str, required=False,
+                        help="输入图片文件路径（覆盖 config.INPUT_PATH）")
+    parser.add_argument("-o", "--output-dir", type=str, required=False,
+                        help="导出目录（覆盖 config.OUTPUT_PATH）")
+    return parser.parse_args()
 
 def load_image(image_path):
     try:
@@ -190,62 +198,76 @@ async def stream_generate(image=None, prompt=''):
 
     return final_output
 
-
 if __name__ == "__main__":
+    args = parse_args()
 
-    os.makedirs(OUTPUT_PATH, exist_ok=True)
-    os.makedirs(f'{OUTPUT_PATH}/images', exist_ok=True)
+    # 解析最终输入/输出路径（命令行优先，未传则使用 config 默认）
+    final_input_path = args.input if args.input else INPUT_PATH
+    final_output_dir = args.output_dir if args.output_dir else OUTPUT_PATH
 
-    image = load_image(INPUT_PATH).convert('RGB')
+    os.makedirs(final_output_dir, exist_ok=True)
+    os.makedirs(f"{final_output_dir}/images", exist_ok=True)
 
-    if '<image>' in PROMPT:
+    # 基于输入图片文件名构造导出 Markdown 文件名
+    base_name = os.path.splitext(os.path.basename(final_input_path))[0]
+    md_path_ori = os.path.join(final_output_dir, f"{base_name}_ori.md")
+    md_path_clean = os.path.join(final_output_dir, f"{base_name}.md")
 
-        image_features = DeepseekOCRProcessor().tokenize_with_images(images=[image], bos=True, eos=True,
-                                                                     cropping=CROP_MODE)
+    # 读取图像（使用最终输入路径）
+    image = load_image(final_input_path)
+    if image is None:
+        raise FileNotFoundError(f"无法打开输入图片: {final_input_path}")
+    image = image.convert("RGB")
+
+    # 根据 PROMPT 是否包含 <image>，准备多模态输入
+    if "<image>" in PROMPT:
+        image_features = DeepseekOCRProcessor().tokenize_with_images(
+            images=[image], bos=True, eos=True, cropping=CROP_MODE
+        )
     else:
-        image_features = ''
+        image_features = ""
 
     prompt = PROMPT
 
+    # 推理
     result_out = asyncio.run(stream_generate(image_features, prompt))
 
     save_results = 1
 
-    if save_results and '<image>' in prompt:
-        print('=' * 15 + 'save results:' + '=' * 15)
+    if save_results and "<image>" in prompt:
+        print("=" * 15 + "save results:" + "=" * 15)
 
         image_draw = image.copy()
-
         outputs = result_out
 
-        with open(f'{OUTPUT_PATH}/result_ori.mmd', 'w', encoding='utf-8') as afile:
+        # 原始输出改存为 .md（保留原逻辑“原始 + 清洗”两个版本）
+        with open(md_path_ori, "w", encoding="utf-8") as afile:
             afile.write(outputs)
 
         matches_ref, matches_images, mathes_other = re_match(outputs)
-        # print(matches_ref)
         result = process_image_with_refs(image_draw, matches_ref)
 
+        # 将 image 类型的特殊标签替换为 Markdown 图片引用
         for idx, a_match_image in enumerate(tqdm(matches_images, desc="image")):
-            outputs = outputs.replace(a_match_image, f'![](images/' + str(idx) + '.jpg)\n')
+            outputs = outputs.replace(a_match_image, f"![](images/{idx}.jpg)\n")
 
+        # 其他标签清理
         for idx, a_match_other in enumerate(tqdm(mathes_other, desc="other")):
-            outputs = outputs.replace(a_match_other, '').replace('\\coloneqq', ':=').replace('\\eqqcolon', '=:')
-
-        # if 'structural formula' in conversation[0]['content']:
-        #     outputs = '<smiles>' + outputs + '</smiles>'
-        with open(f'{OUTPUT_PATH}/result.mmd', 'w', encoding='utf-8') as afile:
+            outputs = outputs.replace(a_match_other, "") \
+                             .replace("\\\\coloneqq", ":=") \
+                             .replace("\\\\eqqcolon", "=:")
+        # 清洗后输出，使用 foo.md
+        with open(md_path_clean, "w", encoding="utf-8") as afile:
             afile.write(outputs)
 
-        if 'line_type' in outputs:
+        # 几何可选绘制
+        if "line_type" in outputs:
             import matplotlib.pyplot as plt
             from matplotlib.patches import Circle
 
-            lines = eval(outputs)['Line']['line']
-
-            line_type = eval(outputs)['Line']['line_type']
-            # print(lines)
-
-            endpoints = eval(outputs)['Line']['line_endpoint']
+            lines = eval(outputs)["Line"]["line"]
+            line_type = eval(outputs)["Line"]["line_type"]
+            endpoints = eval(outputs)["Line"]["line_endpoint"]
 
             fig, ax = plt.subplots(figsize=(3, 3), dpi=200)
             ax.set_xlim(-15, 15)
@@ -253,38 +275,136 @@ if __name__ == "__main__":
 
             for idx, line in enumerate(lines):
                 try:
-                    p0 = eval(line.split(' -- ')[0])
-                    p1 = eval(line.split(' -- ')[-1])
-
-                    if line_type[idx] == '--':
-                        ax.plot([p0[0], p1[0]], [p0[1], p1[1]], linewidth=0.8, color='k')
+                    p0 = eval(line.split(" -- ")[0])
+                    p1 = eval(line.split(" -- ")[-1])
+                    if line_type[idx] == "--":
+                        ax.plot([p0[0], p1[0]], [p0[1], p1[1]], linewidth=0.8, color="k")
                     else:
-                        ax.plot([p0[0], p1[0]], [p0[1], p1[1]], linewidth=0.8, color='k')
-
-                    ax.scatter(p0[0], p0[1], s=5, color='k')
-                    ax.scatter(p1[0], p1[1], s=5, color='k')
+                        ax.plot([p0[0], p1[0]], [p0[1], p1[1]], linewidth=0.8, color="k")
+                    ax.scatter(p0[0], p0[1], s=5, color="k")
+                    ax.scatter(p1[0], p1[1], s=5, color="k")
                 except:
                     pass
 
             for endpoint in endpoints:
-                label = endpoint.split(': ')[0]
-                (x, y) = eval(endpoint.split(': ')[1])
-                ax.annotate(label, (x, y), xytext=(1, 1), textcoords='offset points',
-                            fontsize=5, fontweight='light')
+                label = endpoint.split(": ")[0]
+                (x, y) = eval(endpoint.split(": ")[1])
+                ax.annotate(label, (x, y), xytext=(1, 1), textcoords="offset points",
+                            fontsize=5, fontweight="light")
 
             try:
-                if 'Circle' in eval(outputs).keys():
-                    circle_centers = eval(outputs)['Circle']['circle_center']
-                    radius = eval(outputs)['Circle']['radius']
-
+                if "Circle" in eval(outputs).keys():
+                    circle_centers = eval(outputs)["Circle"]["circle_center"]
+                    radius = eval(outputs)["Circle"]["radius"]
                     for center, r in zip(circle_centers, radius):
-                        center = eval(center.split(': ')[1])
-                        circle = Circle(center, radius=r, fill=False, edgecolor='black', linewidth=0.8)
+                        center = eval(center.split(": ")[1])
+                        circle = Circle(center, radius=r, fill=False, edgecolor="black", linewidth=0.8)
                         ax.add_patch(circle)
             except:
                 pass
 
-            plt.savefig(f'{OUTPUT_PATH}/geo.jpg')
+            plt.savefig(os.path.join(final_output_dir, "geo.jpg"))
             plt.close()
 
-        result.save(f'{OUTPUT_PATH}/result_with_boxes.jpg')
+        # 保存带框图（保持原逻辑，只是落到新输出目录）
+        result.save(os.path.join(final_output_dir, "result_with_boxes.jpg"))
+
+
+
+# if __name__ == "__main__":
+#
+#     os.makedirs(OUTPUT_PATH, exist_ok=True)
+#     os.makedirs(f'{OUTPUT_PATH}/images', exist_ok=True)
+#
+#     image = load_image(INPUT_PATH).convert('RGB')
+#
+#     if '<image>' in PROMPT:
+#
+#         image_features = DeepseekOCRProcessor().tokenize_with_images(images=[image], bos=True, eos=True,
+#                                                                      cropping=CROP_MODE)
+#     else:
+#         image_features = ''
+#
+#     prompt = PROMPT
+#
+#     result_out = asyncio.run(stream_generate(image_features, prompt))
+#
+#     save_results = 1
+#
+#     if save_results and '<image>' in prompt:
+#         print('=' * 15 + 'save results:' + '=' * 15)
+#
+#         image_draw = image.copy()
+#
+#         outputs = result_out
+#
+#         with open(f'{OUTPUT_PATH}/result_ori.mmd', 'w', encoding='utf-8') as afile:
+#             afile.write(outputs)
+#
+#         matches_ref, matches_images, mathes_other = re_match(outputs)
+#         # print(matches_ref)
+#         result = process_image_with_refs(image_draw, matches_ref)
+#
+#         for idx, a_match_image in enumerate(tqdm(matches_images, desc="image")):
+#             outputs = outputs.replace(a_match_image, f'![](images/' + str(idx) + '.jpg)\n')
+#
+#         for idx, a_match_other in enumerate(tqdm(mathes_other, desc="other")):
+#             outputs = outputs.replace(a_match_other, '').replace('\\coloneqq', ':=').replace('\\eqqcolon', '=:')
+#
+#         # if 'structural formula' in conversation[0]['content']:
+#         #     outputs = '<smiles>' + outputs + '</smiles>'
+#         with open(f'{OUTPUT_PATH}/result.mmd', 'w', encoding='utf-8') as afile:
+#             afile.write(outputs)
+#
+#         if 'line_type' in outputs:
+#             import matplotlib.pyplot as plt
+#             from matplotlib.patches import Circle
+#
+#             lines = eval(outputs)['Line']['line']
+#
+#             line_type = eval(outputs)['Line']['line_type']
+#             # print(lines)
+#
+#             endpoints = eval(outputs)['Line']['line_endpoint']
+#
+#             fig, ax = plt.subplots(figsize=(3, 3), dpi=200)
+#             ax.set_xlim(-15, 15)
+#             ax.set_ylim(-15, 15)
+#
+#             for idx, line in enumerate(lines):
+#                 try:
+#                     p0 = eval(line.split(' -- ')[0])
+#                     p1 = eval(line.split(' -- ')[-1])
+#
+#                     if line_type[idx] == '--':
+#                         ax.plot([p0[0], p1[0]], [p0[1], p1[1]], linewidth=0.8, color='k')
+#                     else:
+#                         ax.plot([p0[0], p1[0]], [p0[1], p1[1]], linewidth=0.8, color='k')
+#
+#                     ax.scatter(p0[0], p0[1], s=5, color='k')
+#                     ax.scatter(p1[0], p1[1], s=5, color='k')
+#                 except:
+#                     pass
+#
+#             for endpoint in endpoints:
+#                 label = endpoint.split(': ')[0]
+#                 (x, y) = eval(endpoint.split(': ')[1])
+#                 ax.annotate(label, (x, y), xytext=(1, 1), textcoords='offset points',
+#                             fontsize=5, fontweight='light')
+#
+#             try:
+#                 if 'Circle' in eval(outputs).keys():
+#                     circle_centers = eval(outputs)['Circle']['circle_center']
+#                     radius = eval(outputs)['Circle']['radius']
+#
+#                     for center, r in zip(circle_centers, radius):
+#                         center = eval(center.split(': ')[1])
+#                         circle = Circle(center, radius=r, fill=False, edgecolor='black', linewidth=0.8)
+#                         ax.add_patch(circle)
+#             except:
+#                 pass
+#
+#             plt.savefig(f'{OUTPUT_PATH}/geo.jpg')
+#             plt.close()
+#
+#         result.save(f'{OUTPUT_PATH}/result_with_boxes.jpg')

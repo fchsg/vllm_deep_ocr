@@ -85,16 +85,7 @@ The current open-source model supports the following modes:
 - Dynamic resolution
   - Gundam: n×640×640 + 1×1024×1024 ✅
 
-## Prompts examples
-```python
-# document: <image>\n<|grounding|>Convert the document to markdown.
-# other image: <image>\n<|grounding|>OCR this image.
-# without layouts: <image>\nFree OCR.
-# figures in document: <image>\nParse the figure.
-# general: <image>\nDescribe this image in detail.
-# rec: <image>\nLocate <|ref|>xxxx<|/ref|> in the image.
-# '先天下之忧而忧'
-```
+## Examples
 
 ![test1.jpg](Test/image_ocr/deep_seek_ocr_input/test1.jpg)
 [test1.md](Test%2Fimage_ocr%2Fdeep_seek_ocr_output%2Ftest1%2Ftest1.md)

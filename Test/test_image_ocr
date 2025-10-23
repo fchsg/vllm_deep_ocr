@@ -1,0 +1,9 @@
+python ~/vllm_deep_ocr/DeepSeek-OCR-master/DeepSeek-OCR-vllm/run_dpsk_ocr_image.py  -i "/home/nx/deep_seek_ocr_input/test1.jpg" -o "/home/nx/deep_seek_ocr_output"
+
+python ~/vllm_deep_ocr/DeepSeek-OCR-master/DeepSeek-OCR-vllm/run_dpsk_ocr_image.py  -i "/home/nx/deep_seek_ocr_input/test2.jpg" -o "/home/nx/deep_seek_ocr_output"
+
+python ~/vllm_deep_ocr/DeepSeek-OCR-master/DeepSeek-OCR-vllm/run_dpsk_ocr_image.py  -i "/home/nx/deep_seek_ocr_input/test3.jpg" -o "/home/nx/deep_seek_ocr_output"
+
+python ~/vllm_deep_ocr/DeepSeek-OCR-master/DeepSeek-OCR-vllm/run_dpsk_ocr_image.py  -i "/home/nx/deep_seek_ocr_input/test4.png" -o "/home/nx/deep_seek_ocr_output"
+
+python ~/vllm_deep_ocr/DeepSeek-OCR-master/DeepSeek-OCR-vllm/run_dpsk_ocr_image.py  -i "/home/nx/deep_seek_ocr_input/test5.jpg" -o "/home/nx/deep_seek_ocr_output"

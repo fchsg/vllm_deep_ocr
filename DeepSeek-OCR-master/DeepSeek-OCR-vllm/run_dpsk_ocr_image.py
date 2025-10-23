@@ -4,6 +4,7 @@ import os
 import argparse
 import ast
 import time
+import unicodedata
 
 import torch
 
@@ -164,6 +165,60 @@ def to_plain_text(model_output: str) -> str:
     return "\n".join(lines).strip()
 
 
+def normalize_human_readable(text: str) -> str:
+    """
+    将清洗后的纯文本进一步规范为人类可读格式：
+    - 去掉 LaTeX 包裹符号 \( \) \[ \] $ $
+    - 将常见 LaTeX 符号替换为对应 Unicode
+    - 将 \\frac{a}{b} 转为 a/b
+    - 去除 Markdown 加粗、分隔线、冗余修饰
+    - 规整选项与空白
+    """
+    t = text
+
+    # 1) 去掉 LaTeX 数学包裹符号与多余反斜杠
+    t = re.sub(r'\\\(|\\\)', '', t)  # \( \)
+    t = re.sub(r'\\\[|\\\]', '', t)  # \[ \]
+    t = re.sub(r'\$(.*?)\$', r'\1', t)  # $...$
+    t = t.replace('\\\\', '\\')  # 双反斜杠规整
+
+    # 2) 替换常见 LaTeX 控制序列为 Unicode
+    latex_map = {
+        r'\leq': '≤', r'\geq': '≥', r'\times': '×', r'\div': '÷',
+        r'\pm': '±', r'\cdot': '·', r'\neq': '≠', r'\approx': '≈',
+        r'\infty': '∞', r'\to': '→', r'\Leftarrow': '⇐', r'\Rightarrow': '⇒',
+        r'\ldots': '…', r'\cdots': '⋯'
+    }
+    for k, v in latex_map.items():
+        t = t.replace(k, v)
+
+    # 3) 处理 \frac{a}{b} => a/b（迭代几次以覆盖简单嵌套）
+    def frac_to_plain(m):
+        num = m.group(1).strip()
+        den = m.group(2).strip()
+        return f"{num}/{den}"
+
+    for _ in range(3):
+        t = re.sub(r'\\frac\s*{\s*([^{}]+?)\s*}\s*{\s*([^{}]+?)\s*}', frac_to_plain, t)
+
+    # 4) 去掉 Markdown 装饰与分隔
+    t = re.sub(r'\*\*(.*?)\*\*', r'\1', t)  # **加粗**
+    t = re.sub(r'^-{3,}\s*$', '', t, flags=re.MULTILINE)  # --- 分隔线
+    t = re.sub(r'^={3,}\s*$', '', t, flags=re.MULTILINE)  # === 分隔线
+    t = re.sub(r'^\s*#+\s*', '', t, flags=re.MULTILINE)  # # 标题前缀
+
+    # 5) 选项规整：确保 A. B. C. D. 前有换行、后有空格
+    t = re.sub(r'\s*([A-D])\.\s*', r'\n\1. ', t)
+
+    # 6) 合理合并多余空白
+    t = re.sub(r'\n{3,}', '\n\n', t)  # 多空行压成最多 2 行
+    t = re.sub(r'[ \t]{2,}', ' ', t)  # 行内多空格压缩
+
+    # 7) 去除首尾空白与统一 Unicode 归一化
+    t = unicodedata.normalize('NFKC', t.strip())
+    return t
+
+
 async def stream_generate(image=None, prompt='', skip_special_tokens=False):
     engine_args = AsyncEngineArgs(
         model=MODEL_PATH,
@@ -274,11 +329,13 @@ if __name__ == "__main__":
     print("=" * 54 + "\n")
 
     if mode == "text":
-        # 提取纯文本并保存
+        # 提取纯文本并转为人类可读
         plain_text = to_plain_text(result_out)
+        readable_text = normalize_human_readable(plain_text)
+
         txt_path = os.path.join(RUN_OUTPUT_DIR, "result.txt")
         with open(txt_path, "w", encoding="utf-8") as f:
-            f.write(plain_text)
+            f.write(readable_text)
         print(f"[file] 纯文本 OCR 结果已保存: {txt_path}")
 
         if '<image>' not in prompt:

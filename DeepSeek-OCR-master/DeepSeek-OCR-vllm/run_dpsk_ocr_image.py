@@ -1,8 +1,10 @@
+python
 import asyncio
 import re
 import os
 import time
 import argparse
+import shutil
 
 import torch
 
@@ -36,7 +38,7 @@ def parse_args():
     parser.add_argument("-i", "--input", type=str, required=False,
                         help="输入图片文件路径（覆盖 config.INPUT_PATH）")
     parser.add_argument("-o", "--output-dir", type=str, required=False,
-                        help="导出目录（覆盖 config.OUTPUT_PATH）")
+                        help="输出根目录（覆盖 config.OUTPUT_PATH）。实际导出目录为 <输出根目录>/<输入图片文件名不含扩展名>。")
     return parser.parse_args()
 
 
@@ -71,7 +73,7 @@ def re_match(text):
 def extract_coordinates_and_label(ref_text, image_width, image_height):
     try:
         label_type = ref_text[1]
-        cor_list = eval(ref_text[2])  # 注意：模型输出应尽量改为 JSON，使用 json.loads 更安全
+        cor_list = eval(ref_text[2])  # 建议未来改为 JSON 并用 json.loads 更安全
     except Exception as e:
         print(e)
         return None
@@ -135,7 +137,6 @@ def draw_bounding_boxes(image, refs, output_dir):
 
                 box = _normalize_and_clip_box(x1, y1, x2, y2, image_width, image_height)
                 if box is None:
-                    # 无效框，跳过
                     continue
 
                 bx1, by1, bx2, by2 = box
@@ -203,7 +204,6 @@ async def stream_generate(image=None, prompt=''):
         max_tokens=8192,
         logits_processors=logits_processors,
         skip_special_tokens=False,
-        # ignore_eos=False,
     )
 
     request_id = f"request-{int(time.time())}"
@@ -240,10 +240,25 @@ async def stream_generate(image=None, prompt=''):
 if __name__ == "__main__":
     args = parse_args()
 
-    # 最终输入/输出路径（命令行优先）
+    # 最终输入路径（命令行优先）
     final_input_path = args.input if args.input else INPUT_PATH
-    final_output_dir = args.output_dir if args.output_dir else OUTPUT_PATH
+    if not final_input_path:
+        raise ValueError("未提供输入图片路径，请使用 -i 或在 config.py 中设置 INPUT_PATH")
 
+    # 基于输入图片名构造导出目录：<输出根目录>/<base_name>
+    base_name = os.path.splitext(os.path.basename(final_input_path))[0]
+    output_root = args.output_dir if args.output_dir else OUTPUT_PATH
+    if not output_root:
+        raise ValueError("未提供输出根目录，请使用 -o 或在 config.py 中设置 OUTPUT_PATH")
+
+    final_output_dir = os.path.join(output_root, base_name)
+
+    # 若目录存在则清空，否则创建
+    if os.path.exists(final_output_dir):
+        try:
+            shutil.rmtree(final_output_dir)
+        except Exception as e:
+            raise RuntimeError(f"清理旧目录失败: {final_output_dir}, error: {e}")
     os.makedirs(final_output_dir, exist_ok=True)
     os.makedirs(os.path.join(final_output_dir, 'images'), exist_ok=True)
 
@@ -253,8 +268,7 @@ if __name__ == "__main__":
         raise FileNotFoundError(f"无法打开输入图片: {final_input_path}")
     image = image.convert('RGB')
 
-    # 基于输入图片名构造 Markdown 文件名
-    base_name = os.path.splitext(os.path.basename(final_input_path))[0]
+    # Markdown 文件名（放到 per-image 目录）
     md_path_ori = os.path.join(final_output_dir, f"{base_name}_ori.md")
     md_path_clean = os.path.join(final_output_dir, f"{base_name}.md")
 
@@ -287,7 +301,7 @@ if __name__ == "__main__":
         matches_ref, matches_images, mathes_other = re_match(outputs)
         result = process_image_with_refs(image_draw, matches_ref, final_output_dir)
 
-        # 将 image 类型标签替换为 Markdown 图片引用
+        # 将 image 类型标签替换为 Markdown 图片引用（相对路径）
         for idx, a_match_image in enumerate(tqdm(matches_images, desc="image")):
             outputs = outputs.replace(a_match_image, f'![](images/{idx}.jpg)\n')
 
@@ -316,11 +330,7 @@ if __name__ == "__main__":
                     p0 = eval(line.split(' -- ')[0])
                     p1 = eval(line.split(' -- ')[-1])
 
-                    if line_type[idx] == '--':
-                        ax.plot([p0[0], p1[0]], [p0[1], p1[1]], linewidth=0.8, color='k')
-                    else:
-                        ax.plot([p0[0], p1[0]], [p0[1], p1[1]], linewidth=0.8, color='k')
-
+                    ax.plot([p0[0], p1[0]], [p0[1], p1[1]], linewidth=0.8, color='k')
                     ax.scatter(p0[0], p0[1], s=5, color='k')
                     ax.scatter(p1[0], p1[1], s=5, color='k')
                 except:

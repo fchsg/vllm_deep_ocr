@@ -93,7 +93,7 @@ pip install flash-attn==2.7.3 --no-build-isolation
 - VLLM:
 >**Note:** change the INPUT_PATH/OUTPUT_PATH and other settings in the vllm_deep_ocr/DeepSeek-OCR-vllm/config.py
 ```Shell
-cd vllm_deep_ocr/DeepSeek-OCR-vllm/DeepSeek-OCR-vllm
+cd ~/vllm_deep_ocr/DeepSeek-OCR-master/DeepSeek-OCR-vllm
 ```
 1. image: streaming output
 ```Shell

@@ -1,65 +1,3 @@
-<!-- markdownlint-disable first-line-h1 -->
-<!-- markdownlint-disable html -->
-<!-- markdownlint-disable no-duplicate-header -->
-
-
-<div align="center">
-  <img src="assets/logo.svg" width="60%" alt="DeepSeek AI" />
-</div>
-
-
-<hr>
-<div align="center">
-  <a href="https://www.deepseek.com/" target="_blank">
-    <img alt="Homepage" src="assets/badge.svg" />
-  </a>
-  <a href="https://huggingface.co/deepseek-ai/DeepSeek-OCR" target="_blank">
-    <img alt="Hugging Face" src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-DeepSeek%20AI-ffc107?color=ffc107&logoColor=white" />
-  </a>
-
-</div>
-
-<div align="center">
-
-  <a href="https://discord.gg/Tc7c45Zzu5" target="_blank">
-    <img alt="Discord" src="https://img.shields.io/badge/Discord-DeepSeek%20AI-7289da?logo=discord&logoColor=white&color=7289da" />
-  </a>
-  <a href="https://twitter.com/deepseek_ai" target="_blank">
-    <img alt="Twitter Follow" src="https://img.shields.io/badge/Twitter-deepseek_ai-white?logo=x&logoColor=white" />
-  </a>
-
-</div>
-
-
-
-<p align="center">
-  <a href="https://huggingface.co/deepseek-ai/DeepSeek-OCR"><b>📥 Model Download</b></a> |
-  <a href="https://github.com/deepseek-ai/DeepSeek-OCR/blob/main/DeepSeek_OCR_paper.pdf"><b>📄 Paper Link</b></a> |
-  <a href="https://arxiv.org/abs/2510.18234"><b>📄 Arxiv Paper Link</b></a> |
-</p>
-
-<h2>
-<p align="center">
-  <a href="">DeepSeek-OCR: Contexts Optical Compression</a>
-</p>
-</h2>
-
-<p align="center">
-<img src="assets/fig1.png" style="width: 1000px" align=center>
-</p>
-<p align="center">
-<a href="">Explore the boundaries of visual-text compression.</a>       
-</p>
-
-## Release
-- [2025/10/20]🚀🚀🚀 We release DeepSeek-OCR, a model to investigate the role of vision encoders from an LLM-centric viewpoint.
-
-## Contents
-- [Install](#install)
-- [vLLM Inference](#vllm-inference)
-- [Transformers Inference](#transformers-inference)
-  
-
 ## debug
 
 ``` bash
@@ -158,32 +96,8 @@ The current open-source model supports the following modes:
 # '先天下之忧而忧'
 ```
 
+![test1.jpg](Test/image_ocr/deep_seek_ocr_input/test1.jpg)
+[test1.md](Test%2Fimage_ocr%2Fdeep_seek_ocr_output%2Ftest1%2Ftest1.md)
 
-## Visualizations
-<table>
-<tr>
-<td><img src="assets/show1.jpg" style="width: 500px"></td>
-<td><img src="assets/show2.jpg" style="width: 500px"></td>
-</tr>
-<tr>
-<td><img src="assets/show3.jpg" style="width: 500px"></td>
-<td><img src="assets/show4.jpg" style="width: 500px"></td>
-</tr>
-</table>
-
-
-## Acknowledgement
-
-We would like to thank [Vary](https://github.com/Ucas-HaoranWei/Vary/), [GOT-OCR2.0](https://github.com/Ucas-HaoranWei/GOT-OCR2.0/), [MinerU](https://github.com/opendatalab/MinerU), [PaddleOCR](https://github.com/PaddlePaddle/PaddleOCR), [OneChart](https://github.com/LingyvKong/OneChart), [Slow Perception](https://github.com/Ucas-HaoranWei/Slow-Perception) for their valuable models and ideas.
-
-We also appreciate the benchmarks: [Fox](https://github.com/ucaslcl/Fox), [OminiDocBench](https://github.com/opendatalab/OmniDocBench).
-
-## Citation
-
-```bibtex
-@article{wei2024deepseek-ocr,
-  title={DeepSeek-OCR: Contexts Optical Compression},
-  author={Wei, Haoran and Sun, Yaofeng and Li, Yukun},
-  journal={arXiv preprint arXiv:2510.18234},
-  year={2025}
-}
+![test2.jpg](Test/image_ocr/deep_seek_ocr_input/test2.jpg)
+[test2.md](Test/image_ocr/deep_seek_ocr_output/test2/test2.md)

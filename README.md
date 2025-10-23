@@ -60,8 +60,12 @@
 - [Transformers Inference](#transformers-inference)
   
 
+## debug
 
-
+``` bash
+windows系统文件夹进入wsl2中ubuntu
+\\wsl.localhost\Ubuntu-24.04\home\nx\
+```
 
 ## Install
 >Our environment is cuda11.8+torch2.6.0.

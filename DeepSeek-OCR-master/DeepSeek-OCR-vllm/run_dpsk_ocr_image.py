@@ -34,6 +34,8 @@ def parse_args():
     parser.add_argument("-p", "--prompt", type=str, help="覆盖默认 PROMPT（若包含 <image> 则启用图像处理）")
     parser.add_argument("--crop-mode", type=str, help="覆盖 CROP_MODE（需与项目定义一致）")
     parser.add_argument("-s", "--save", type=int, default=1, help="是否保存结果文件与裁剪图(1是/0否)，默认1")
+    parser.add_argument("--mode", type=str, choices=["text", "layout"], default="text",
+                        help="识别模式：text=提取纯文本(默认)，layout=版面结构与裁剪")
     return parser.parse_args()
 
 
@@ -145,7 +147,24 @@ def process_image_with_refs(image, ref_texts, images_save_dir):
     return result_image
 
 
-async def stream_generate(image=None, prompt=''):
+def to_plain_text(model_output: str) -> str:
+    """
+    将模型输出清理为纯文本：
+    - 移除 <|...|> 这类特殊标记
+    - 移除 <|ref|>...<|/ref|><|det|>...<|/det|> 整块结构
+    - 去掉多余空行与收尾空白
+    """
+    # 去掉 ref/det 结构块
+    text = re.sub(r'<\|ref\|>.*?<\|/ref\|><\|det\|>.*?<\|/det\|>', ' ', model_output, flags=re.DOTALL)
+    # 去掉其他 <|...|> 标记
+    text = re.sub(r'<\|.*?\|>', ' ', text)
+    # 去掉多余空白行
+    lines = [ln.strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]
+    return "\n".join(lines).strip()
+
+
+async def stream_generate(image=None, prompt='', skip_special_tokens=False):
     engine_args = AsyncEngineArgs(
         model=MODEL_PATH,
         hf_overrides={"architectures": ["DeepseekOCRForCausalLM"]},
@@ -165,7 +184,7 @@ async def stream_generate(image=None, prompt=''):
         temperature=0.0,
         max_tokens=8192,
         logits_processors=logits_processors,
-        skip_special_tokens=False,
+        skip_special_tokens=skip_special_tokens,
     )
 
     request_id = f"request-{int(time.time())}"
@@ -202,15 +221,15 @@ if __name__ == "__main__":
 
     # 覆盖配置
     input_path = args.input if args.input else INPUT_PATH
-    # 覆盖全局 OUTPUT_PATH 的值（仅在当前模块作用域内使用）
-    OUTPUT_PATH = args.output if args.output else OUTPUT_PATH
-    prompt = args.prompt if args.prompt is not None else PROMPT
+    output_base = args.output if args.output else OUTPUT_PATH
+    user_prompt = args.prompt  # 先保留用户输入，稍后按模式决定最终 prompt
     crop_mode = args.crop_mode if args.crop_mode is not None else CROP_MODE
     save_results = int(args.save) if args.save is not None else 1
+    mode = args.mode  # "text" or "layout"
 
     # 基于图片名创建独立输出子目录
     base_name = os.path.splitext(os.path.basename(input_path))[0]
-    RUN_OUTPUT_DIR = os.path.join(OUTPUT_PATH, base_name)
+    RUN_OUTPUT_DIR = os.path.join(output_base, base_name)
     os.makedirs(RUN_OUTPUT_DIR, exist_ok=True)
     print(f"[dir] 本次输出目录: {RUN_OUTPUT_DIR}")
 
@@ -224,7 +243,21 @@ if __name__ == "__main__":
         raise RuntimeError(f"无法加载输入图片: {input_path}")
     image = image.convert('RGB')
 
-    # 处理图像特征（需要 <image> 才会走图像分支）
+    # 按模式决定默认 prompt 与 skip_special_tokens
+    if mode == "text":
+        # 若用户未自定义 prompt，则使用一个适合 OCR 的默认提示，且必须包含 <image>
+        prompt = user_prompt if user_prompt is not None else (
+            "<image>\n"
+            "你是一名 OCR 系统。请识别图像中的所有可读文本，"
+            "按书写/自然阅读顺序输出。仅输出识别到的纯文本，不要添加解释、标签或额外格式。"
+        )
+        skip_special_tokens = True  # 文本模式下过滤特殊 token 更干净
+    else:
+        # layout 模式：保持原先配置（需要保留特殊标记以供结构解析）
+        prompt = user_prompt if user_prompt is not None else PROMPT
+        skip_special_tokens = False
+
+    # 准备图像特征（需要 <image>）
     if '<image>' in prompt:
         image_features = DeepseekOCRProcessor().tokenize_with_images(
             images=[image], bos=True, eos=True, cropping=crop_mode
@@ -233,99 +266,110 @@ if __name__ == "__main__":
         image_features = ''
 
     # 异步推理
-    result_out = asyncio.run(stream_generate(image_features, prompt))
+    result_out = asyncio.run(stream_generate(image_features, prompt, skip_special_tokens=skip_special_tokens))
 
-    # 总体文本输出到控制台
+    # 完整打印模型输出
     print("\n" + "=" * 20 + " 模型完整输出 " + "=" * 20)
     print(result_out)
     print("=" * 54 + "\n")
 
-    if save_results and '<image>' in prompt:
-        print('=' * 15 + ' 保存结果 ' + '=' * 15)
+    if mode == "text":
+        # 提取纯文本并保存
+        plain_text = to_plain_text(result_out)
+        txt_path = os.path.join(RUN_OUTPUT_DIR, "result.txt")
+        with open(txt_path, "w", encoding="utf-8") as f:
+            f.write(plain_text)
+        print(f"[file] 纯文本 OCR 结果已保存: {txt_path}")
 
-        image_draw = image.copy()
-        outputs = result_out
+        if '<image>' not in prompt:
+            print("[warn] 当前 PROMPT 不包含 <image>，可能未进行图像相关处理。")
 
-        # 保存原始 MMD 到子目录
-        result_ori_path = os.path.join(RUN_OUTPUT_DIR, 'result_ori.mmd')
-        with open(result_ori_path, 'w', encoding='utf-8') as afile:
-            afile.write(outputs)
-        print(f"[file] 原始结果已保存: {result_ori_path}")
+    else:
+        # layout 模式：沿用原逻辑（mmd、裁剪、绘框、几何等）
+        if save_results and '<image>' in prompt:
+            print('=' * 15 + ' 保存结果(版面解析) ' + '=' * 15)
 
-        # 正则匹配与绘制（裁剪图保存到 images_dir）
-        matches_ref, matches_images, mathes_other = re_match(outputs)
-        result = process_image_with_refs(image_draw, matches_ref, images_dir)
+            image_draw = image.copy()
+            outputs = result_out
 
-        # 替换 image/other 标记（保持相对路径 images/idx.jpg）
-        for idx, a_match_image in enumerate(tqdm(matches_images, desc="image")):
-            outputs = outputs.replace(a_match_image, f'![](images/{idx}.jpg)\n')
+            # 保存原始 MMD 到子目录
+            result_ori_path = os.path.join(RUN_OUTPUT_DIR, 'result_ori.mmd')
+            with open(result_ori_path, 'w', encoding='utf-8') as afile:
+                afile.write(outputs)
+            print(f"[file] 原始结果已保存: {result_ori_path}")
 
-        for idx, a_match_other in enumerate(tqdm(mathes_other, desc="other")):
-            outputs = outputs.replace(a_match_other, '').replace('\\coloneqq', ':=').replace('\\eqqcolon', '=:')
+            # 正则匹配与绘制（裁剪图保存到 images_dir）
+            matches_ref, matches_images, mathes_other = re_match(outputs)
+            result = process_image_with_refs(image_draw, matches_ref, images_dir)
 
-        # 保存处理后的 MMD 到子目录
-        result_mmd_path = os.path.join(RUN_OUTPUT_DIR, 'result.mmd')
-        with open(result_mmd_path, 'w', encoding='utf-8') as afile:
-            afile.write(outputs)
-        print(f"[file] 转换后结果已保存: {result_mmd_path}")
+            # 替换 image/other 标记（保持相对路径 images/idx.jpg）
+            for idx, a_match_image in enumerate(tqdm(matches_images, desc="image")):
+                outputs = outputs.replace(a_match_image, f'![](images/{idx}.jpg)\n')
 
-        # 可选几何绘图到子目录（保留原有 eval 依赖的格式）
-        if 'line_type' in outputs:
-            import matplotlib.pyplot as plt
-            from matplotlib.patches import Circle
+            for idx, a_match_other in enumerate(tqdm(mathes_other, desc="other")):
+                outputs = outputs.replace(a_match_other, '').replace('\\coloneqq', ':=').replace('\\eqqcolon', '=:')
 
-            lines = eval(outputs)['Line']['line']
-            line_type = eval(outputs)['Line']['line_type']
-            endpoints = eval(outputs)['Line']['line_endpoint']
+            # 保存处理后的 MMD 到子目录
+            result_mmd_path = os.path.join(RUN_OUTPUT_DIR, 'result.mmd')
+            with open(result_mmd_path, 'w', encoding='utf-8') as afile:
+                afile.write(outputs)
+            print(f"[file] 转换后结果已保存: {result_mmd_path}")
 
-            fig, ax = plt.subplots(figsize=(3, 3), dpi=200)
-            ax.set_xlim(-15, 15)
-            ax.set_ylim(-15, 15)
+            # 可选几何绘图到子目录（依赖输出格式）
+            if 'line_type' in outputs:
+                import matplotlib.pyplot as plt
+                from matplotlib.patches import Circle
 
-            for idx, line in enumerate(lines):
+                lines = eval(outputs)['Line']['line']
+                line_type = eval(outputs)['Line']['line_type']
+                endpoints = eval(outputs)['Line']['line_endpoint']
+
+                fig, ax = plt.subplots(figsize=(3, 3), dpi=200)
+                ax.set_xlim(-15, 15)
+                ax.set_ylim(-15, 15)
+
+                for idx, line in enumerate(lines):
+                    try:
+                        p0 = eval(line.split(' -- ')[0])
+                        p1 = eval(line.split(' -- ')[-1])
+
+                        if line_type[idx] == '--':
+                            ax.plot([p0[0], p1[0]], [p0[1], p1[1]], linewidth=0.8, color='k')
+                        else:
+                            ax.plot([p0[0], p1[0]], [p0[1], p1[1]], linewidth=0.8, color='k')
+
+                        ax.scatter(p0[0], p0[1], s=5, color='k')
+                        ax.scatter(p1[0], p1[1], s=5, color='k')
+                    except:
+                        pass
+
+                for endpoint in endpoints:
+                    label = endpoint.split(': ')[0]
+                    (x, y) = eval(endpoint.split(': ')[1])
+                    ax.annotate(label, (x, y), xytext=(1, 1), textcoords='offset points',
+                                fontsize=5, fontweight='light')
+
                 try:
-                    p0 = eval(line.split(' -- ')[0])
-                    p1 = eval(line.split(' -- ')[-1])
+                    if 'Circle' in eval(outputs).keys():
+                        circle_centers = eval(outputs)['Circle']['circle_center']
+                        radius = eval(outputs)['Circle']['radius']
 
-                    if line_type[idx] == '--':
-                        ax.plot([p0[0], p1[0]], [p0[1], p1[1]], linewidth=0.8, color='k')
-                    else:
-                        ax.plot([p0[0], p1[0]], [p0[1], p1[1]], linewidth=0.8, color='k')
-
-                    ax.scatter(p0[0], p0[1], s=5, color='k')
-                    ax.scatter(p1[0], p1[1], s=5, color='k')
+                        for center, r in zip(circle_centers, radius):
+                            center = eval(center.split(': ')[1])
+                            circle = Circle(center, radius=r, fill=False, edgecolor='black', linewidth=0.8)
+                            ax.add_patch(circle)
                 except:
                     pass
 
-            for endpoint in endpoints:
-                label = endpoint.split(': ')[0]
-                (x, y) = eval(endpoint.split(': ')[1])
-                ax.annotate(label, (x, y), xytext=(1, 1), textcoords='offset points',
-                            fontsize=5, fontweight='light')
+                geo_path = os.path.join(RUN_OUTPUT_DIR, 'geo.jpg')
+                plt.savefig(geo_path)
+                plt.close()
+                print(f"[file] 几何图已保存: {geo_path}")
 
-            try:
-                if 'Circle' in eval(outputs).keys():
-                    circle_centers = eval(outputs)['Circle']['circle_center']
-                    radius = eval(outputs)['Circle']['radius']
-
-                    for center, r in zip(circle_centers, radius):
-                        center = eval(center.split(': ')[1])
-                        circle = Circle(center, radius=r, fill=False, edgecolor='black', linewidth=0.8)
-                        ax.add_patch(circle)
-            except:
-                pass
-
-            geo_path = os.path.join(RUN_OUTPUT_DIR, 'geo.jpg')
-            import matplotlib.pyplot as plt
-
-            plt.savefig(geo_path)
-            plt.close()
-            print(f"[file] 几何图已保存: {geo_path}")
-
-        # 保存带框的结果图到子目录
-        result_img_path = os.path.join(RUN_OUTPUT_DIR, 'result_with_boxes.jpg')
-        result.save(result_img_path)
-        print(f"[file] 标注图已保存: {result_img_path}")
-    else:
-        if '<image>' not in prompt:
-            print("[warn] 当前 PROMPT 不包含 <image>，未进行图像相关处理与裁剪导出。")
+            # 保存带框的结果图到子目录
+            result_img_path = os.path.join(RUN_OUTPUT_DIR, 'result_with_boxes.jpg')
+            result.save(result_img_path)
+            print(f"[file] 标注图已保存: {result_img_path}")
+        else:
+            if '<image>' not in prompt:
+                print("[warn] 当前 PROMPT 不包含 <image>，未进行图像相关处理与裁剪导出。")

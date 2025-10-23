@@ -12,7 +12,6 @@ import numpy as np
 from tqdm import tqdm
 
 from vllm import LLM, SamplingParams
-from vllm.model_executor.models.deepseek_ocr import NGramPerReqLogitsProcessor
 
 # 你本地的配置（保留原有 config 引入，也可以通过命令行覆盖）
 from config import MODEL_PATH, OUTPUT_PATH as CFG_OUTPUT_PATH, PROMPT as CFG_PROMPT
@@ -156,7 +155,7 @@ def draw_bounding_boxes_and_crop(image: Image.Image, refs, images_save_dir: str)
 
 
 def to_plain_text(model_output: str) -> str:
-    """
+    r"""
     清理模型输出为纯文本：
     - 移除 <|...|> 特殊标记 与 ref/det 结构
     - 去掉多余空白行
@@ -169,7 +168,7 @@ def to_plain_text(model_output: str) -> str:
 
 
 def normalize_human_readable(text: str) -> str:
-    """
+    r"""
     进一步规范为人类可读格式：
     - 去掉 LaTeX 包裹符号 \( \) \[ \] $ $
     - 替换常用 LaTeX 控制序列为 Unicode
@@ -213,11 +212,11 @@ def normalize_human_readable(text: str) -> str:
 
 
 def build_llm(model_path: str) -> LLM:
+    # 关键修改：不再传 logits_processors，避免对内部模块路径的依赖
     llm = LLM(
         model=model_path,
         enable_prefix_caching=False,
-        mm_processor_cache_gb=0,
-        logits_processors=[NGramPerReqLogitsProcessor]
+        mm_processor_cache_gb=0
     )
     return llm
 

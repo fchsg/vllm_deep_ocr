@@ -67,7 +67,7 @@
 >Our environment is cuda11.8+torch2.6.0.
 1. Clone this repository and navigate to the DeepSeek-OCR folder
 ```bash
-git clone https://github.com/deepseek-ai/DeepSeek-OCR.git
+git clone https://github.com/fchsg/vllm_deep_ocr.git
 ```
 2. Conda
 ```Shell
@@ -87,9 +87,9 @@ pip install flash-attn==2.7.3 --no-build-isolation
 
 ## vLLM-Inference
 - VLLM:
->**Note:** change the INPUT_PATH/OUTPUT_PATH and other settings in the DeepSeek-OCR-master/DeepSeek-OCR-vllm/config.py
+>**Note:** change the INPUT_PATH/OUTPUT_PATH and other settings in the vllm_deep_ocr/DeepSeek-OCR-vllm/config.py
 ```Shell
-cd DeepSeek-OCR-master/DeepSeek-OCR-vllm
+cd vllm_deep_ocr/DeepSeek-OCR-vllm
 ```
 1. image: streaming output
 ```Shell
@@ -125,7 +125,7 @@ res = model.infer(tokenizer, prompt=prompt, image_file=image_file, output_path =
 ```
 or you can
 ```Shell
-cd DeepSeek-OCR-master/DeepSeek-OCR-hf
+cd vllm_deep_ocr/DeepSeek-OCR-hf
 python run_dpsk_ocr.py
 ```
 ## Support-Modes

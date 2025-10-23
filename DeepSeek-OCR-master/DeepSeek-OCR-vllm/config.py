@@ -21,8 +21,8 @@ MODEL_PATH = 'deepseek-ai/DeepSeek-OCR' # change to your model path
 # .jpg, .png, .jpeg: run_dpsk_ocr_image.py; 
 # Omnidocbench images path: run_dpsk_ocr_eval_batch.py
 
-INPUT_PATH = '/home/nx/DeepSeek-OCR/assets/show1.jpg' 
-OUTPUT_PATH = '/home/nx/DeepSeek-OCR/outputs'
+INPUT_PATH = '/home/nx/vllm_deep_ocr/assets/show1.jpg'
+OUTPUT_PATH = '/home/nx/vllm_deep_ocr/outputs'
 
 PROMPT = '<image>\n<|grounding|>Convert the document to markdown.'
 # PROMPT = '<image>\nFree OCR.'

@@ -62,6 +62,7 @@ def re_match(text):
     mathes_image = []
     mathes_other = []
     for a_match in matches:
+        # 统一小写判断 image
         if '<|ref|>image<|/ref|>' in a_match[0].lower():
             mathes_image.append(a_match[0])
         else:
@@ -72,7 +73,7 @@ def re_match(text):
 def extract_coordinates_and_label(ref_text, image_width, image_height):
     try:
         label_type = ref_text[1]
-        cor_list = eval(ref_text[2])  # 建议未来改为 JSON 并用 json.loads 更安全
+        cor_list = eval(ref_text[2])  # 注意：建议改为严格 JSON 后用 json.loads 更安全
     except Exception as e:
         print(e)
         return None
@@ -180,6 +181,30 @@ def draw_bounding_boxes(image, refs, output_dir):
 def process_image_with_refs(image, ref_texts, output_dir):
     result_image = draw_bounding_boxes(image, ref_texts, output_dir)
     return result_image
+
+
+def latex_to_plain(text: str) -> str:
+    """
+    将包含 LaTeX 的文本转为更可读的纯文本。
+    首选使用 latex2text.Latex2Text，若不可用则回退到 pylatexenc.latex2text。
+    如果均不可用则返回原文本。
+    """
+    if not text:
+        return text
+    # 首选 latex2text
+    try:
+        from latex2text import Latex2Text
+        conv = Latex2Text()
+        return conv.get_text(text)
+    except Exception:
+        pass
+    # 回退 pylatexenc
+    try:
+        from pylatexenc.latex2text import LatexNodes2Text
+        return LatexNodes2Text().latex_to_text(text)
+    except Exception:
+        pass
+    return text
 
 
 async def stream_generate(image=None, prompt=''):
@@ -292,7 +317,7 @@ if __name__ == "__main__":
         image_draw = image.copy()
         outputs = result_out
 
-        # 保存原始输出（.md）
+        # 保存原始输出（含 LaTeX 的原文，.md 后缀仅为兼容既有逻辑）
         with open(md_path_ori, 'w', encoding='utf-8') as afile:
             afile.write(outputs)
 
@@ -301,24 +326,34 @@ if __name__ == "__main__":
         result = process_image_with_refs(image_draw, matches_ref, final_output_dir)
 
         # 将 image 类型标签替换为 Markdown 图片引用（相对路径）
+        cleaned = outputs
         for idx, a_match_image in enumerate(tqdm(matches_images, desc="image")):
-            outputs = outputs.replace(a_match_image, f'![](images/{idx}.jpg)\n')
+            cleaned = cleaned.replace(a_match_image, f'![](images/{idx}.jpg)\n')
 
-        # 清理其他标签与 LaTeX 特殊符号
+        # 清理其他标签与常见 LaTeX 等号符号
         for idx, a_match_other in enumerate(tqdm(mathes_other, desc="other")):
-            outputs = outputs.replace(a_match_other, '').replace('\\\\coloneqq', ':=').replace('\\\\eqqcolon', '=:')
-        # 保存清洗后的 Markdown
-        with open(md_path_clean, 'w', encoding='utf-8') as afile:
-            afile.write(outputs)
+            cleaned = cleaned.replace(a_match_other, '')
+        cleaned = cleaned.replace('\\\\coloneqq', ':=').replace('\\\\eqqcolon', '=:')
+        # 进一步可在此移除其它已知控制序列或包裹标记
 
-        # 几何绘制（可选）
+        # 使用 LaTeX 解析器将文本转为纯文本
+        cleaned_plain = latex_to_plain(cleaned)
+
+        # 保存清洗并转为纯文本后的结果
+        with open(md_path_clean, 'w', encoding='utf-8') as afile:
+            afile.write(cleaned_plain)
+
+        # 几何绘制（可选，仍使用原始格式解析）
         if 'line_type' in outputs:
             import matplotlib.pyplot as plt
             from matplotlib.patches import Circle
 
-            lines = eval(outputs)['Line']['line']
-            line_type = eval(outputs)['Line']['line_type']
-            endpoints = eval(outputs)['Line']['line_endpoint']
+            try:
+                lines = eval(outputs)['Line']['line']
+                line_type = eval(outputs)['Line']['line_type']
+                endpoints = eval(outputs)['Line']['line_endpoint']
+            except Exception:
+                lines, line_type, endpoints = [], [], []
 
             fig, ax = plt.subplots(figsize=(3, 3), dpi=200)
             ax.set_xlim(-15, 15)
@@ -328,7 +363,6 @@ if __name__ == "__main__":
                 try:
                     p0 = eval(line.split(' -- ')[0])
                     p1 = eval(line.split(' -- ')[-1])
-
                     ax.plot([p0[0], p1[0]], [p0[1], p1[1]], linewidth=0.8, color='k')
                     ax.scatter(p0[0], p0[1], s=5, color='k')
                     ax.scatter(p1[0], p1[1], s=5, color='k')
@@ -336,20 +370,26 @@ if __name__ == "__main__":
                     pass
 
             for endpoint in endpoints:
-                label = endpoint.split(': ')[0]
-                (x, y) = eval(endpoint.split(': ')[1])
-                ax.annotate(label, (x, y), xytext=(1, 1), textcoords='offset points',
-                            fontsize=5, fontweight='light')
+                try:
+                    label = endpoint.split(': ')[0]
+                    (x, y) = eval(endpoint.split(': ')[1])
+                    ax.annotate(label, (x, y), xytext=(1, 1), textcoords='offset points',
+                                fontsize=5, fontweight='light')
+                except:
+                    pass
 
             try:
-                if 'Circle' in eval(outputs).keys():
-                    circle_centers = eval(outputs)['Circle']['circle_center']
-                    radius = eval(outputs)['Circle']['radius']
-
+                parsed = eval(outputs)
+                if 'Circle' in parsed.keys():
+                    circle_centers = parsed['Circle'].get('circle_center', [])
+                    radius = parsed['Circle'].get('radius', [])
                     for center, r in zip(circle_centers, radius):
-                        center = eval(center.split(': ')[1])
-                        circle = Circle(center, radius=r, fill=False, edgecolor='black', linewidth=0.8)
-                        ax.add_patch(circle)
+                        try:
+                            center = eval(center.split(': ')[1])
+                            circle = Circle(center, radius=r, fill=False, edgecolor='black', linewidth=0.8)
+                            ax.add_patch(circle)
+                        except:
+                            pass
             except:
                 pass
 

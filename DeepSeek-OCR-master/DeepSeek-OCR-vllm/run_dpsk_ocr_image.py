@@ -215,8 +215,9 @@ def build_llm(model_path: str) -> LLM:
     # 关键修改：不再传 logits_processors，避免对内部模块路径的依赖
     llm = LLM(
         model=model_path,
-        enable_prefix_caching=False,
-        mm_processor_cache_gb=0
+        trust_remote_code=True,  # deepseek 模型通常需要
+        # enable_prefix_caching=False,
+        # mm_processor_cache_gb=0
     )
     return llm
 

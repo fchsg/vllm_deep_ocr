@@ -217,6 +217,7 @@ def build_llm(model_path: str) -> LLM:
         model=model_path,
         trust_remote_code=True,  # deepseek 模型通常需要
         hf_overrides={"architectures": ["DeepseekOCRForCausalLM"]}
+
         # enable_prefix_caching=False,
         # mm_processor_cache_gb=0
     )

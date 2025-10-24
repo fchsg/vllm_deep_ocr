@@ -8,6 +8,12 @@ from PIL import Image
 import tempfile
 import shutil
 
+# pylatexenc 用于 LaTeX 转文本
+try:
+    from pylatexenc.latex2text import LatexNodes2Text
+except Exception as _e:
+    print("pylatexenc 未安装，请先执行: pip install pylatexenc")
+
 # Global variables for model and tokenizer
 model = None
 tokenizer = None
@@ -145,6 +151,80 @@ def process_image(image, prompt_type, custom_prompt, model_size):
         return f"Error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}\n\nPlease make sure you have a CUDA-enabled GPU and all dependencies installed."
 
 
+# =========================
+# 新增：LaTeX 转文本与 Markdown 构建/导出工具函数
+# =========================
+def latex_to_readable_text(latex_str: str) -> str:
+    """
+    使用 pylatexenc 将 LaTeX 转换为可读纯文本。
+    如果 pylatexenc 不可用或转换失败，返回原文。
+    """
+    if not latex_str or not latex_str.strip():
+        return latex_str
+    try:
+        return LatexNodes2Text().latex_to_text(latex_str)
+    except Exception:
+        return latex_str
+
+
+def build_markdown_with_image(readable_text: str, image_obj) -> str:
+    """
+    生成包含文本与图片的 Markdown。
+    - readable_text: 已转换为可读文本的结果
+    - image_obj: 来自 gr.Image 的 PIL Image 或者路径
+    策略：
+      1) 至少嵌入用户上传的图片，满足“如果处理的图片中包含图片，返回markdown中需要包含图片”。
+      2) 若后续需要插入文档内部图片，请在 infer 阶段保留图片列表与位置信息再扩展。
+    """
+    md_parts = []
+    md_parts.append("# OCR 结果")
+    md_parts.append("")
+    md_parts.append("## 文本")
+    md_parts.append("")
+    md_parts.append(readable_text if readable_text else "*未识别到文本*")
+    md_parts.append("")
+    md_parts.append("## 图片")
+    md_parts.append("")
+    # 由导出函数写入 input_image.jpg，在此使用固定相对路径
+    md_parts.append("![输入图片](input_image.jpg)")
+    md_parts.append("")
+    return "\n".join(md_parts)
+
+
+def export_markdown(markdown_text: str, image_obj):
+    """
+    将 Markdown 与图片导出到本地临时目录，并返回 .md 文件路径用于下载。
+    - 在临时目录写入 input_image.jpg 和 result.md
+    - Gradio 的 File 组件接收 .md 文件路径以供下载
+    """
+    try:
+        temp_dir = tempfile.mkdtemp()
+        md_path = os.path.join(temp_dir, "result.md")
+        img_path = os.path.join(temp_dir, "input_image.jpg")
+
+        # 保存图片
+        if image_obj is not None:
+            if isinstance(image_obj, str) and os.path.exists(image_obj):
+                shutil.copy(image_obj, img_path)
+            else:
+                # 尝试作为 PIL.Image 保存
+                try:
+                    image_obj.save(img_path)
+                except Exception:
+                    # 非 PIL.Image 类型，则不保存图片
+                    pass
+
+        # 写入 Markdown
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(markdown_text or "")
+
+        return md_path
+    except Exception as e:
+        # 返回 None 让 File 不显示，同时可在 UI 上提示
+        print(f"导出失败: {e}")
+        return None
+
+
 def create_demo():
     """Create Gradio interface"""
 
@@ -224,10 +304,23 @@ def create_demo():
                     show_copy_button=True
                 )
 
+                # 新增：LaTeX 转文本 + Markdown 生成/导出
+                gr.Markdown("### 📝 Markdown")
+                readable_toggle = gr.Checkbox(
+                    label="将 LaTeX 转换为可读文本（pylatexenc）",
+                    value=True,
+                    info="开启后将使用 pylatexenc 把 LaTeX 转为普通文本"
+                )
+                generate_md_btn = gr.Button("📝 生成 Markdown", variant="secondary")
+                md_preview = gr.Markdown(label="Markdown 预览", value="")
+                export_md_btn = gr.Button("💾 导出 Markdown", variant="secondary")
+                md_file = gr.File(label="下载生成的 Markdown 文件", interactive=False)
+
                 gr.Markdown(
                     """
                     ### 📥 Export
-                    You can copy the results using the copy button above.
+                    1) 点击“生成 Markdown”预览文本与图片
+                    2) 点击“导出 Markdown”保存至本地临时目录并下载 .md 文件（包含图片）
                     """
                 )
 
@@ -246,6 +339,38 @@ def create_demo():
             fn=process_image,
             inputs=[image_input, prompt_type, custom_prompt, model_size],
             outputs=[output_text]
+        )
+
+        # 生成 Markdown 逻辑
+        def to_readable_and_md(text_result, image_obj, use_readable):
+            """
+            将文本（可能为 LaTeX）转换为可读文本，并生成 Markdown 预览。
+            """
+            try:
+                readable = latex_to_readable_text(text_result) if use_readable else text_result
+                md_str = build_markdown_with_image(readable, image_obj)
+                return md_str
+            except Exception as e:
+                return f"生成 Markdown 失败：{e}"
+
+        generate_md_btn.click(
+            fn=to_readable_and_md,
+            inputs=[output_text, image_input, readable_toggle],
+            outputs=[md_preview]
+        )
+
+        # 导出 Markdown 逻辑
+        def on_export_md(md_str, image_obj):
+            """
+            导出 Markdown 到临时目录并返回下载文件。
+            """
+            file_path = export_markdown(md_str, image_obj)
+            return file_path
+
+        export_md_btn.click(
+            fn=on_export_md,
+            inputs=[md_preview, image_input],
+            outputs=[md_file]
         )
 
         # Add examples
@@ -273,9 +398,7 @@ def create_demo():
             - **Small**: Fast, good for simple documents (640x640)
             - **Base**: Balanced performance (1024x1024)
             - **Large**: High accuracy, slower (1280x1280)
-            - **Gundam**: Best balance with crop mode (1024x640 with cropping)
-
-            **Note:** First run will download the model (~several GB). Requires CUDA-enabled GPU.
+            - **Gundam (Recommended)**: Balanced config with crop mode for complex docs
             """
         )
 
@@ -283,14 +406,6 @@ def create_demo():
 
 
 if __name__ == "__main__":
-    # Set CUDA device
-    os.environ["CUDA_VISIBLE_DEVICES"] = '0'
-
-    # Create and launch demo
     demo = create_demo()
-    demo.launch(
-        server_name="0.0.0.0",  # Allow external access
-        server_port=7860,
-        share=False,  # Set to True to create a public link
-        debug=True
-    )
+    # 允许本地访问，可按需修改 server_name/port
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=False)

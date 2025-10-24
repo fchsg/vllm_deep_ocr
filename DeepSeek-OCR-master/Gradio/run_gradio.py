@@ -1,6 +1,6 @@
 # run_gradio.py
-# 确保安装了 gradio，用 pip install gradio
-# 确保安装 pylatexenc 用于 LaTeX 转文本：pip install pylatexenc
+# 注意：替换本文件会启动 Gradio 服务，确保依赖已安装
+# pip install gradio transformers torch pillow pylatexenc
 
 import gradio as gr
 from transformers import AutoModel, AutoTokenizer
@@ -44,121 +44,6 @@ def load_model():
     return model, tokenizer
 
 
-def process_image(image, prompt_type, custom_prompt, model_size):
-    """Process image with OCR"""
-    try:
-        # Load model if not already loaded
-        model, tokenizer = load_model()
-
-        # Create temporary directory for output
-        temp_dir = tempfile.mkdtemp()
-
-        # Save uploaded image temporarily
-        temp_image_path = os.path.join(temp_dir, "input_image.jpg")
-        if isinstance(image, str):
-            shutil.copy(image, temp_image_path)
-        else:
-            image.save(temp_image_path)
-
-        # Set prompt based on selection
-        if prompt_type == "Free OCR":
-            prompt = "<image>\nFree OCR. "
-        elif prompt_type == "Markdown Conversion":
-            prompt = "<image>\n<|grounding|>Convert the document to markdown. "
-        elif prompt_type == "Custom":
-            prompt = f"<image>\n{custom_prompt}"
-        else:
-            prompt = "<image>\nFree OCR. "
-
-        # Set model size parameters
-        size_configs = {
-            "Tiny": {"base_size": 512, "image_size": 512, "crop_mode": False},
-            "Small": {"base_size": 640, "image_size": 640, "crop_mode": False},
-            "Base": {"base_size": 1024, "image_size": 1024, "crop_mode": False},
-            "Large": {"base_size": 1280, "image_size": 1280, "crop_mode": False},
-            "Gundam (Recommended)": {"base_size": 1024, "image_size": 640, "crop_mode": True}
-        }
-
-        config = size_configs[model_size]
-
-        # Capture stdout to get the OCR results
-        import sys
-        from io import StringIO
-
-        # Redirect stdout to capture print statements
-        old_stdout = sys.stdout
-        sys.stdout = captured_output = StringIO()
-
-        try:
-            # Run inference
-            result = model.infer(
-                tokenizer,
-                prompt=prompt,
-                image_file=temp_image_path,
-                output_path=temp_dir,
-                base_size=config["base_size"],
-                image_size=config["image_size"],
-                crop_mode=config["crop_mode"],
-                save_results=True,
-                test_compress=False
-            )
-        finally:
-            # Restore stdout
-            sys.stdout = old_stdout
-
-        # Get captured output
-        captured_text = captured_output.getvalue()
-
-        # Try to read from saved text file if it exists
-        ocr_text = ""
-        for filename in os.listdir(temp_dir):
-            if filename.endswith('.txt'):
-                with open(os.path.join(temp_dir, filename), 'r', encoding='utf-8') as f:
-                    ocr_text += f.read() + "\n"
-
-        # If we found text in files, use that; otherwise use captured output
-        if ocr_text.strip():
-            final_result = ocr_text.strip()
-        elif captured_text.strip():
-            # Parse the captured output to extract actual OCR text
-            # Remove detection boxes and reference tags
-            lines = captured_text.split('\n')
-            clean_lines = []
-            for line in lines:
-                # Skip lines with detection boxes and reference tags
-                if '<|ref|>' in line or '<|det|>' in line or '<|/ref|>' in line or '<|/det|>' in line:
-                    # Extract text between tags
-                    import re
-                    # Pattern to match text between </ref|> and <|det|>
-                    text_match = re.search(r'<\|/ref\|>(.*?)<\|det\|>', line)
-                    if text_match:
-                        clean_lines.append(text_match.group(1).strip())
-                elif line.startswith('=====') or 'BASE:' in line or 'PATCHES:' in line or line.startswith(
-                        'image:') or line.startswith('other:'):
-                    continue
-                elif line.strip():
-                    clean_lines.append(line.strip())
-
-            final_result = '\n'.join(clean_lines)
-        elif isinstance(result, str):
-            final_result = result
-        else:
-            final_result = str(result) if result else "No text detected in image."
-
-        # Clean up temporary directory
-        shutil.rmtree(temp_dir)
-
-        return final_result if final_result.strip() else "No text detected in image."
-
-    except Exception as e:
-        import traceback
-        return f"Error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}\n\nPlease make sure you have a CUDA-enabled GPU and all dependencies installed."
-
-
-# =========================
-# 新增：LaTeX 转文本与 Markdown 构建/导出工具函数（含 base64 嵌入）
-# =========================
-
 def latex_to_readable_text(latex_str: str) -> str:
     """
     使用 pylatexenc 将 LaTeX 转换为可读纯文本。
@@ -181,7 +66,6 @@ def pil_image_to_base64_datauri(img: Image.Image, max_width=1200, quality=85, fm
     """
     if img is None:
         return None
-    # 确保为 PIL.Image
     try:
         w, h = img.size
     except Exception:
@@ -195,13 +79,12 @@ def pil_image_to_base64_datauri(img: Image.Image, max_width=1200, quality=85, fm
 
     img_format = fmt.upper()
     buf = io.BytesIO()
-    # 对 PNG 或透明图片，若需要保留透明度可使用 PNG
     save_kwargs = {}
     if img_format == "JPEG":
-        # convert to RGB to avoid 保存 RGBA 导致错误
         if img.mode in ("RGBA", "LA"):
             background = Image.new("RGB", img.size, (255, 255, 255))
-            background.paste(img, mask=img.split()[3])  # 3 is alpha
+            # 使用 alpha 通道作为 mask
+            background.paste(img, mask=img.split()[3])
             img_to_save = background
         else:
             img_to_save = img.convert("RGB")
@@ -218,9 +101,10 @@ def pil_image_to_base64_datauri(img: Image.Image, max_width=1200, quality=85, fm
 
 def build_markdown_with_image(readable_text: str, image_obj, embed_base64=True, max_width=1200, quality=85):
     """
-    生成包含文本与图片的 Markdown。
-    - 如果 embed_base64=True，会将输入图片编码为 base64 data URI 并直接嵌入 Markdown。
-    - 否则使用相对路径 'input_image.jpg'（需配合导出时打包图片）。
+    生成包含 OCR 文本与 OCR 结果图片的 Markdown。
+    - readable_text: OCR 可读文本
+    - image_obj: PIL.Image 或 路径
+    - embed_base64: 是否将图片以 data URI 形式嵌入 Markdown（默认 True）
     """
     md_parts = []
     md_parts.append("# OCR 结果")
@@ -229,14 +113,13 @@ def build_markdown_with_image(readable_text: str, image_obj, embed_base64=True, 
     md_parts.append("")
     md_parts.append(readable_text if readable_text else "*未识别到文本*")
     md_parts.append("")
-    md_parts.append("## 图片")
+    md_parts.append("## OCR 结果图片")
     md_parts.append("")
 
     if image_obj is None:
-        md_parts.append("_无上传图片_")
+        md_parts.append("_无 OCR 输出图片_")
     else:
         if embed_base64:
-            # 如果 image_obj 是路径则先打开
             try:
                 if isinstance(image_obj, str) and os.path.exists(image_obj):
                     pil_img = Image.open(image_obj)
@@ -244,13 +127,13 @@ def build_markdown_with_image(readable_text: str, image_obj, embed_base64=True, 
                     pil_img = image_obj  # 期望是 PIL.Image
                 data_uri = pil_image_to_base64_datauri(pil_img, max_width=max_width, quality=quality)
                 if data_uri:
-                    md_parts.append(f"![输入图片]({data_uri})")
+                    md_parts.append(f"![OCR 结果]({data_uri})")
                 else:
-                    md_parts.append("![输入图片](input_image.jpg)")
+                    md_parts.append("![OCR 结果](input_image.jpg)")
             except Exception:
-                md_parts.append("![输入图片](input_image.jpg)")
+                md_parts.append("![OCR 结果](input_image.jpg)")
         else:
-            md_parts.append("![输入图片](input_image.jpg)")
+            md_parts.append("![OCR 结果](input_image.jpg)")
 
     md_parts.append("")
     return "\n".join(md_parts)
@@ -258,16 +141,15 @@ def build_markdown_with_image(readable_text: str, image_obj, embed_base64=True, 
 
 def export_markdown(markdown_text: str, image_obj, embed_base64=True, max_width=1200, quality=85):
     """
-    将 Markdown 与图片导出到本地临时目录，并返回 .md 文件路径用于下载。
-    - 当 embed_base64=True 时，Markdown 中已嵌入图片，无需单独保存图片（.md 即包含图像）
-    - 当 embed_base64=False 时，会把图片保存为 input_image.jpg 与 result.md 同目录
-    注意：将 base64 嵌入 .md 会使文件更大，但能保证 Gradio 前端预览正常。
+    导出 Markdown，并返回可供 gr.File 下载的路径。
+    - embed_base64 True: .md 中已包含图片 (data URI)
+    - embed_base64 False: 会将图片保存为 input_image.jpg 与 result.md 同目录
+    返回 md 文件的绝对路径或 None
     """
     try:
         temp_dir = tempfile.mkdtemp()
         md_path = os.path.join(temp_dir, "result.md")
 
-        # 如果不嵌入，需要把图片存为 input_image.jpg
         if not embed_base64 and image_obj is not None:
             img_path = os.path.join(temp_dir, "input_image.jpg")
             try:
@@ -278,7 +160,6 @@ def export_markdown(markdown_text: str, image_obj, embed_base64=True, max_width=
             except Exception as e:
                 print(f"保存图片失败: {e}")
 
-        # 写入 Markdown
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(markdown_text or "")
 
@@ -286,6 +167,171 @@ def export_markdown(markdown_text: str, image_obj, embed_base64=True, max_width=
     except Exception as e:
         print(f"导出失败: {e}")
         return None
+
+
+def find_result_image_in_dir(dir_path):
+    """
+    在模型输出目录中查找代表 OCR 结果的图片文件。
+    策略：
+      - 搜索常见图像扩展 (.png, .jpg, .jpeg)
+      - 优先选择文件名包含 'result' 或 'vis' 或 'output' 的文件
+      - 否则返回第一个找到的图像
+    返回：PIL.Image 对象或 None
+    """
+    exts = ('.png', '.jpg', '.jpeg', '.webp')
+    candidates = []
+    for fname in os.listdir(dir_path):
+        if fname.lower().endswith(exts):
+            candidates.append(fname)
+
+    if not candidates:
+        return None
+
+    # 优先级排序
+    preferred_keywords = ['result', 'vis', 'output', 'pred', 'ocr']
+    def score(name):
+        n = name.lower()
+        s = 0
+        for i, kw in enumerate(preferred_keywords):
+            if kw in n:
+                s += (len(preferred_keywords) - i) * 10
+        # 略微优先较大的文件（可能包含可视化）
+        try:
+            p = os.path.getsize(os.path.join(dir_path, name))
+            s += int(p / 1024)  # 大文件得分更高
+        except Exception:
+            pass
+        return s
+
+    candidates.sort(key=lambda x: score(x), reverse=True)
+    best = candidates[0]
+    try:
+        img_path = os.path.join(dir_path, best)
+        pil_img = Image.open(img_path).convert("RGB")
+        return pil_img
+    except Exception:
+        return None
+
+
+def process_image(image, prompt_type, custom_prompt, model_size):
+    """
+    Process image with OCR and return:
+      - readable_text: 使用 pylatexenc 转换后的可读文本（直接显示在 Results）
+      - result_img: PIL.Image（OCR 结果可视化图片或原始上传图片）
+    """
+    try:
+        model, tokenizer = load_model()
+
+        temp_dir = tempfile.mkdtemp()
+
+        # 保存上传的输入图像
+        temp_image_path = os.path.join(temp_dir, "input_image.jpg")
+        if isinstance(image, str):
+            shutil.copy(image, temp_image_path)
+            input_pil = Image.open(temp_image_path).convert("RGB")
+        else:
+            image.save(temp_image_path)
+            input_pil = image.convert("RGB")
+
+        # 构建 prompt
+        if prompt_type == "Free OCR":
+            prompt = "<image>\nFree OCR. "
+        elif prompt_type == "Markdown Conversion":
+            prompt = "<image>\n<|grounding|>Convert the document to markdown. "
+        elif prompt_type == "Custom":
+            prompt = f"<image>\n{custom_prompt}"
+        else:
+            prompt = "<image>\nFree OCR. "
+
+        size_configs = {
+            "Tiny": {"base_size": 512, "image_size": 512, "crop_mode": False},
+            "Small": {"base_size": 640, "image_size": 640, "crop_mode": False},
+            "Base": {"base_size": 1024, "image_size": 1024, "crop_mode": False},
+            "Large": {"base_size": 1280, "image_size": 1280, "crop_mode": False},
+            "Gundam (Recommended)": {"base_size": 1024, "image_size": 640, "crop_mode": True}
+        }
+
+        config = size_configs.get(model_size, size_configs["Gundam (Recommended)"])
+
+        # 捕获 stdout
+        import sys
+        from io import StringIO
+        old_stdout = sys.stdout
+        sys.stdout = captured_output = StringIO()
+
+        try:
+            result = model.infer(
+                tokenizer,
+                prompt=prompt,
+                image_file=temp_image_path,
+                output_path=temp_dir,
+                base_size=config["base_size"],
+                image_size=config["image_size"],
+                crop_mode=config["crop_mode"],
+                save_results=True,
+                test_compress=False
+            )
+        finally:
+            sys.stdout = old_stdout
+
+        captured_text = captured_output.getvalue()
+
+        # 尝试读取输出目录中的文本文件（优先）
+        ocr_text = ""
+        for filename in os.listdir(temp_dir):
+            if filename.endswith('.txt'):
+                try:
+                    with open(os.path.join(temp_dir, filename), 'r', encoding='utf-8') as f:
+                        ocr_text += f.read() + "\n"
+                except Exception:
+                    pass
+
+        # 如果没有文本文件，解析 captured_text
+        if not ocr_text.strip() and captured_text.strip():
+            lines = captured_text.split('\n')
+            clean_lines = []
+            for line in lines:
+                if '<|ref|>' in line or '<|det|>' in line or '<|/ref|>' in line or '<|/det|>' in line:
+                    import re
+                    text_match = re.search(r'<\|/ref\|>(.*?)<\|det\|>', line)
+                    if text_match:
+                        clean_lines.append(text_match.group(1).strip())
+                elif line.startswith('=====') or 'BASE:' in line or 'PATCHES:' in line or line.startswith('image:') or line.startswith('other:'):
+                    continue
+                elif line.strip():
+                    clean_lines.append(line.strip())
+            ocr_text = "\n".join(clean_lines)
+
+        if not ocr_text.strip():
+            # 如果 result 是字符串，可能直接返回文本
+            if isinstance(result, str):
+                ocr_text = result
+            else:
+                ocr_text = ""
+
+        # 将 OCR 文本（可能为 LaTeX）转换为可读文本
+        readable = latex_to_readable_text(ocr_text) if ocr_text else ""
+
+        # 查找模型生成的结果图片（优先），若无则使用输入图片
+        result_img = find_result_image_in_dir(temp_dir)
+        if result_img is None:
+            result_img = input_pil
+
+        # 将图片加载到内存后可以删除临时目录
+        # result_img 已经是 PIL.Image 对象
+        try:
+            shutil.rmtree(temp_dir)
+        except Exception:
+            pass
+
+        # 返回 readable text 与 PIL image
+        return readable if readable.strip() else "No text detected in image.", result_img
+
+    except Exception as e:
+        import traceback
+        msg = f"Error: {str(e)}\n\nTraceback:\n{traceback.format_exc()}\n\nPlease make sure you have a CUDA-enabled GPU and all dependencies installed."
+        # 返回错误信息与空图片
+        return msg, None
 
 
 def create_demo():
@@ -361,10 +407,14 @@ def create_demo():
                 # Output section
                 gr.Markdown("### 📄 Results")
                 output_text = gr.Textbox(
-                    label="Extracted Text",
+                    label="Extracted Text (readable)",
                     lines=20,
                     max_lines=30,
                     show_copy_button=True
+                )
+                result_image = gr.Image(
+                    label="Result Image (OCR output)",
+                    type="pil"
                 )
 
                 # 新增：LaTeX 转文本 + Markdown 生成/导出
@@ -372,7 +422,7 @@ def create_demo():
                 readable_toggle = gr.Checkbox(
                     label="将 LaTeX 转换为可读文本（pylatexenc）",
                     value=True,
-                    info="开启后将使用 pylatexenc 把 LaTeX 转为普通文本"
+                    info="开启后将使用 pylatexenc 把 LaTeX 转为普通文本（Results 已经返回可读文本）"
                 )
                 embed_toggle = gr.Checkbox(
                     label="在 Markdown 中嵌入图片（Base64）",
@@ -387,8 +437,9 @@ def create_demo():
                 gr.Markdown(
                     """
                     ### 📥 Export
-                    1) 点击“生成 Markdown”预览文本与图片
-                    2) 点击“导出 Markdown”保存至本地临时目录并下载 .md 文件（包含图片或与图片配套）
+                    1) 点击“Process Image”得到 Results（可读文本 + OCR 图像）
+                    2) 点击“生成 Markdown”预览文本与图片
+                    3) 点击“导出 Markdown”保存并下载 .md 文件（包含图片或与图片配套）
                     """
                 )
 
@@ -402,20 +453,22 @@ def create_demo():
             outputs=[custom_prompt]
         )
 
-        # Process button click
+        # Process button click -> return readable text and result image
         process_btn.click(
             fn=process_image,
             inputs=[image_input, prompt_type, custom_prompt, model_size],
-            outputs=[output_text]
+            outputs=[output_text, result_image]
         )
 
-        # 生成 Markdown 逻辑
+        # 生成 Markdown 逻辑 (使用 process 返回的文本与图片)
         def to_readable_and_md(text_result, image_obj, use_readable, embed_base64):
             """
-            将文本（可能为 LaTeX）转换为可读文本，并生成 Markdown 预览（默认嵌入 base64）。
+            将文本（Results 中的文本）和 OCR 结果图片生成 Markdown 预览。
+            Note: text_result 在 process_image 中已为可读文本。
             """
             try:
-                readable = latex_to_readable_text(text_result) if use_readable else text_result
+                # 如果用户关闭了 pylatexenc，但 process_image 已经转了，直接使用 text_result
+                readable = text_result
                 md_str = build_markdown_with_image(readable, image_obj, embed_base64=embed_base64)
                 return md_str
             except Exception as e:
@@ -423,21 +476,18 @@ def create_demo():
 
         generate_md_btn.click(
             fn=to_readable_and_md,
-            inputs=[output_text, image_input, readable_toggle, embed_toggle],
+            inputs=[output_text, result_image, readable_toggle, embed_toggle],
             outputs=[md_preview]
         )
 
         # 导出 Markdown 逻辑
         def on_export_md(md_str, image_obj, embed_base64):
-            """
-            导出 Markdown 到临时目录并返回下载文件。
-            """
             file_path = export_markdown(md_str, image_obj, embed_base64=embed_base64)
             return file_path
 
         export_md_btn.click(
             fn=on_export_md,
-            inputs=[md_preview, image_input, embed_toggle],
+            inputs=[md_preview, result_image, embed_toggle],
             outputs=[md_file]
         )
 
@@ -449,7 +499,7 @@ def create_demo():
                 ["example_receipt.jpg", "Free OCR", "", "Small"],
             ],
             inputs=[image_input, prompt_type, custom_prompt, model_size],
-            outputs=[output_text],
+            outputs=[output_text, result_image],
             fn=process_image,
             cache_examples=False,
         )
@@ -475,5 +525,4 @@ def create_demo():
 
 if __name__ == "__main__":
     demo = create_demo()
-    # 允许本地访问，可按需修改 server_name/port
-    demo.launch(server_name="0.0.0.0", server_port=2714, share=False)
+    demo.launch(server_name="0.0.0.0", server_port=7860, share=False)

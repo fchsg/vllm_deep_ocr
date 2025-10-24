@@ -364,7 +364,7 @@ def create_demo():
         with gr.Row():
             with gr.Column(scale=1):
                 gr.Markdown("### 📤 Input & Settings")
-                image_input = gr.Image(label="Upload Image", type="pil", source="upload")
+                image_input = gr.Image(label="Upload Image", type="pil", sources=["upload", "clipboard"])
                 prompt_type = gr.Radio(choices=["Free OCR", "Markdown Conversion", "Custom"],
                                        value="Markdown Conversion", label="Prompt Type")
                 custom_prompt = gr.Textbox(label="Custom Prompt (if selected)", placeholder="Enter custom prompt...", lines=2, visible=False)

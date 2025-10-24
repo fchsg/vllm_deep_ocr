@@ -435,7 +435,7 @@ def create_demo():
                 gr.Markdown("### 📄 Results")
                 output_text = gr.Textbox(label="Extracted Text (readable)", lines=20, max_lines=50, show_copy_button=True)
                 result_image = gr.Image(label="Result Image (OCR visualization)", type="pil")
-                patches_gallery = gr.Gallery(label="碎图 (patches / crops)", columns=6, type="pil").style(height="auto")
+                patches_gallery = gr.Gallery(label="碎图 (patches / crops)", columns=6, type="pil")
 
                 gr.Markdown("### 📝 Markdown / Export")
                 readable_toggle = gr.Checkbox(label="将 LaTeX 转换为可读文本（pylatexenc）", value=True)

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # run_gradio.py
 # 依赖：
-# pip install gradio transformers torch pillow pdf2image pylatexenc
-# 系统需安装 poppler（pdf2image 依赖）。详见上方说明。
+# pip install gradio transformers torch pillow pymupdf pylatexenc
+# 如果使用 GPU，请确保 torch 已安装对应 CUDA 版本
 
 import gradio as gr
 from transformers import AutoModel, AutoTokenizer
@@ -15,9 +15,11 @@ import io
 import base64
 import re
 import mimetypes
-from pdf2image import convert_from_bytes
 
-# LaTeX -> 可读文本
+# 使用 PyMuPDF（pymupdf）
+import fitz  # pip install pymupdf
+
+# LaTeX -> 可读文本（可选）
 try:
     from pylatexenc.latex2text import LatexNodes2Text
 except Exception:
@@ -53,10 +55,10 @@ def load_model():
 
 
 # -------------------------
-# 辅助函数：文件/图片 -> data URI（尽量保留原始格式）
+# 辅助：读取文件 bytes -> data URI（尽量保留原始格式）
 # -------------------------
 def file_to_data_uri(file_path):
-    """从磁盘读取文件 bytes 并返回 data URI（保持 mime type）。"""
+    """ 从磁盘读取文件 bytes 并返回 data URI（保持 mime type）。 """
     try:
         with open(file_path, "rb") as f:
             b = f.read()
@@ -111,13 +113,12 @@ def pil_to_data_uri(pil_img: Image.Image, original_format=None, preserve_size=Fa
 
 
 # -------------------------
-# 从模型 output 目录收集图片（并保留 path/filename/format/pil）
+# 在模型 output 目录中收集图片（保留 path/filename/format/pil）
 # -------------------------
 def collect_output_images_with_metadata(output_dir, max_images=64):
     """
     在 output_dir 下查找图片文件，返回 list of dict:
       { 'path': abs_path, 'filename': name, 'format': ext_upper, 'pil': PIL.Image or None }
-    优先带关键词的文件（patch/crop/vis）
     """
     items = []
     if not output_dir or not os.path.exists(output_dir):
@@ -175,23 +176,21 @@ def latex_to_readable_text(latex_str: str) -> str:
 
 
 # -------------------------
-# 单张图片推理并收集模型在 temp_dir 输出（返回 可读文本, items）
+# 对单张 PIL 图片调用模型并收集 temp_dir 中输出
 # -------------------------
 def infer_image_and_collect(image_pil: Image.Image, prompt: str, config):
     """
-    对单张 PIL.Image 执行 model.infer（将这张图片保存为临时文件并指定 output_path=temp_dir），
-    然后从 temp_dir 中收集文本文件与图片 metadata，最终删除 temp_dir 返回结果。
+    对单张 PIL.Image 执行 model.infer，并从临时 output_path 收集文本和图片 metadata。
     返回 (readable_text, items_list)
     """
     try:
         model, tokenizer = load_model()
         temp_dir = tempfile.mkdtemp()
 
-        # 保存输入图像为文件供模型读取
         input_path = os.path.join(temp_dir, "input_image.jpg")
         image_pil.save(input_path)
 
-        # 捕获 stdout（模型可能把输出打印到 stdout）
+        # 捕获 stdout
         import sys
         from io import StringIO
         old_stdout = sys.stdout
@@ -213,7 +212,7 @@ def infer_image_and_collect(image_pil: Image.Image, prompt: str, config):
 
         captured_text = captured_output.getvalue()
 
-        # 优先读取 temp_dir 下的 txt 文件
+        # 读取 temp_dir 中的 txt 文件为 OCR 文本
         ocr_text = ""
         for fname in os.listdir(temp_dir):
             if fname.endswith('.txt'):
@@ -245,7 +244,7 @@ def infer_image_and_collect(image_pil: Image.Image, prompt: str, config):
         # 收集 temp_dir 中模型生成的图片
         items = collect_output_images_with_metadata(temp_dir, max_images=64)
 
-        # 清理 temp_dir（items 已加载到内存的 PIL）
+        # 清理临时目录（items 已加载到内存）
         try:
             shutil.rmtree(temp_dir)
         except Exception:
@@ -258,34 +257,34 @@ def infer_image_and_collect(image_pil: Image.Image, prompt: str, config):
 
 
 # -------------------------
-# 将 PDF bytes 转为 PIL.Image 分页（使用 pdf2image）
+# 使用 PyMuPDF 把 PDF bytes 转为 PIL.Image 页列表
 # -------------------------
-def pdf_bytes_to_pil_pages(pdf_bytes, dpi=200, poppler_path=None):
+def pdf_bytes_to_pil_pages_with_pymupdf(pdf_bytes, zoom=2.0):
     """
-    把 PDF 二进制转换为每页的 PIL.Image 列表（RGB）。
-    - dpi: 渲染分辨率，数值越高越清晰但越慢/大
-    - poppler_path: 如果 Windows 或 poppler 未在 PATH，可传入 poppler 的 bin 路径
+    将 PDF bytes 转为每页 PIL.Image（RGB）。
+    - zoom: 渲染缩放因子，approx DPI = 72 * zoom。默认 2.0 ~ 144 DPI。
     """
     pages = []
     try:
-        pil_pages = convert_from_bytes(pdf_bytes, dpi=dpi, poppler_path=poppler_path)
-        for p in pil_pages:
-            pages.append(p.convert("RGB"))
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        for page in doc:
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat, alpha=False)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            pages.append(img)
+        doc.close()
     except Exception as e:
-        print("pdf2image 转换失败:", e)
+        print("PyMuPDF 转换 PDF->image 失败:", e)
     return pages
 
 
 # -------------------------
-# 处理整个 PDF：对每页调用 infer_image_and_collect，聚合每页结果
+# 处理整个 PDF：对每页调用 infer_image_and_collect，聚合结果
 # -------------------------
-def process_pdf_and_collect(pdf_file_path_or_obj, prompt_type, custom_prompt, model_size, dpi=200, poppler_path=None):
+def process_pdf_and_collect(pdf_file_path_or_obj, prompt_type, custom_prompt, model_size, zoom=2.0):
     """
-    输入：pdf_file_path_or_obj（可能是上传的文件路径或 file-like object）
-    返回：
-      - aggregated_text: 按页合并的文本（每页以 '## Page N' 分隔）
-      - all_items: list of items for all pages （按发现顺序）
-      - per_page_items: list of lists (每页对应的 items)
+    pdf_file_path_or_obj: 上传的文件路径或 file-like 对象
+    返回 aggregated_text, all_items, per_page_items
     """
     # 读取 pdf bytes
     try:
@@ -293,16 +292,14 @@ def process_pdf_and_collect(pdf_file_path_or_obj, prompt_type, custom_prompt, mo
             with open(pdf_file_path_or_obj, "rb") as f:
                 pdf_bytes = f.read()
         else:
-            # gr.File 传给我们的可能是一个临时文件对象
             pdf_bytes = pdf_file_path_or_obj.read()
     except Exception as e:
         return f"无法读取上传的 PDF: {e}", [], []
 
-    pages = pdf_bytes_to_pil_pages(pdf_bytes, dpi=dpi, poppler_path=poppler_path)
+    pages = pdf_bytes_to_pil_pages_with_pymupdf(pdf_bytes, zoom=zoom)
     if not pages:
         return "无法将 PDF 转为图片或 PDF 为空。", [], []
 
-    # 模型 size config map（与单图推理使用的配置一致）
     size_map = {
         "Tiny": {"base_size": 512, "image_size": 512, "crop_mode": False},
         "Small": {"base_size": 640, "image_size": 640, "crop_mode": False},
@@ -316,7 +313,6 @@ def process_pdf_and_collect(pdf_file_path_or_obj, prompt_type, custom_prompt, mo
     all_items = []
     per_page_items = []
 
-    # 为每页设置 prompt（可自定义）
     for idx, page_img in enumerate(pages, start=1):
         if prompt_type == "Free OCR":
             prompt = "<image>\nFree OCR. "
@@ -330,7 +326,6 @@ def process_pdf_and_collect(pdf_file_path_or_obj, prompt_type, custom_prompt, mo
         text, items = infer_image_and_collect(page_img, prompt, config)
         aggregated_text_parts.append(f"## Page {idx}\n\n{text}")
         per_page_items.append(items)
-        # extend overall items
         all_items.extend(items)
 
     aggregated_text = "\n\n".join(aggregated_text_parts)
@@ -338,15 +333,9 @@ def process_pdf_and_collect(pdf_file_path_or_obj, prompt_type, custom_prompt, mo
 
 
 # -------------------------
-# 构建 Markdown：把 items 列表以 base64 嵌入（保持原始格式尽量）
+# 构建 Markdown：按页将 items 嵌入为 data URI（尽量保持原始格式）
 # -------------------------
 def build_markdown_from_items_grouped(aggregated_text: str, per_page_items, embed_base64=True, preserve_size=True, patch_max_width=800, quality=90):
-    """
-    per_page_items: list of lists (each inner list items for that page)
-    embed_base64: 是否在 md 中嵌入 data URI（True 推荐）
-    preserve_size: True 尽量使用原始 bytes（file_to_data_uri），否则进行缩放编码
-    返回 markdown 字符串
-    """
     md_lines = []
     md_lines.append("# OCR 结果（PDF）\n")
     md_lines.append("## 文本（按页）\n")
@@ -368,15 +357,12 @@ def build_markdown_from_items_grouped(aggregated_text: str, per_page_items, embe
             md_lines.append(f"#### Page {page_idx} - 片段 {idx} - `{filename}`\n")
             if embed_base64:
                 data_uri = None
-                # 优先使用原始文件 bytes（如果临时目录尚存），但在我们的流程中 temp_dir 已被删除，
-                # 所以优先使用 PIL 并 preserve_size 决定是否缩放或选择 PNG/JPEG
                 pil = it.get('pil')
                 if pil is not None:
                     if preserve_size:
                         data_uri = pil_to_data_uri(pil, original_format=it.get('format'), preserve_size=True)
                     else:
                         data_uri = pil_to_data_uri(pil, original_format=it.get('format'), preserve_size=False, max_width=patch_max_width, quality=quality)
-                # 最后回退：如 path 仍可访问，则用 file_to_data_uri
                 if data_uri is None and it.get('path'):
                     data_uri = file_to_data_uri(it['path'])
                 if data_uri:
@@ -384,30 +370,22 @@ def build_markdown_from_items_grouped(aggregated_text: str, per_page_items, embe
                 else:
                     md_lines.append("![missing]()\n")
             else:
-                # 不嵌入：引用文件名，导出函数会把相应文件写入导出目录
                 md_lines.append(f"![{filename}]({filename})\n")
         md_lines.append("\n")
     return "\n".join(md_lines)
 
 
 # -------------------------
-# 导出 Markdown：写入临时目录并返回 md 路径（当 embed=False 时也会把图片保存）
+# 导出 Markdown：将 md 写入临时目录并返回路径（若不嵌入则保存图片文件）
 # -------------------------
 def export_markdown_pdf(md_text: str, per_page_items, embed_base64=True):
-    """
-    若 embed_base64 False，会把 per_page_items 的原始文件或 PIL 保存到 temp_dir，
-    md_text 已应使用相对文件名引用图片（build_markdown_from_items_grouped 的非嵌入分支）。
-    返回 md 文件绝对路径。
-    """
     try:
         temp_dir = tempfile.mkdtemp()
-        # 如果需要保存图片文件
         if not embed_base64:
             for page_idx, items in enumerate(per_page_items, start=1):
                 for idx, it in enumerate(items, start=1):
                     out_name = it.get('filename') or f'page{page_idx}_patch{idx}.png'
                     out_path = os.path.join(temp_dir, out_name)
-                    # 先 try 原始 path
                     if it.get('path') and os.path.exists(it['path']):
                         try:
                             shutil.copy(it['path'], out_path)
@@ -433,11 +411,11 @@ def export_markdown_pdf(md_text: str, per_page_items, embed_base64=True):
 
 
 # -------------------------
-# Gradio 界面（包含 PDF 上传/处理）
+# Gradio 界面（含 PDF 上传/处理）
 # -------------------------
 def create_demo():
-    with gr.Blocks(title="DeepSeek-OCR (PDF support)", theme=gr.themes.Soft()) as demo:
-        gr.Markdown("# DeepSeek-OCR — PDF OCR 支持\n上传 PDF，逐页 OCR 并把模型输出目录的图片以 base64 嵌入 Markdown。")
+    with gr.Blocks(title="DeepSeek-OCR (PDF via PyMuPDF)", theme=gr.themes.Soft()) as demo:
+        gr.Markdown("# DeepSeek-OCR — PDF OCR 支持（使用 PyMuPDF）\n上传 PDF，逐页 OCR 并把模型输出的图片以 base64 嵌入 Markdown。")
 
         with gr.Row():
             with gr.Column(scale=1):
@@ -447,8 +425,7 @@ def create_demo():
                 prompt_type = gr.Radio(choices=["Free OCR", "Markdown Conversion", "Custom"], value="Markdown Conversion", label="Prompt Type")
                 custom_prompt = gr.Textbox(label="Custom Prompt (if selected)", placeholder="Enter custom prompt...", lines=2, visible=False)
                 model_size = gr.Radio(choices=["Tiny", "Small", "Base", "Large", "Gundam (Recommended)"], value="Gundam (Recommended)", label="Model Size")
-                dpi_slider = gr.Slider(100, 400, value=200, step=10, label="PDF 渲染 DPI（越高越清晰，越慢/占用越大）")
-                poppler_path_input = gr.Textbox(label="poppler bin 路径（Windows 可选）", placeholder="如果 poppler 未在 PATH，填写 poppler 的 bin 路径", value="", visible=False)
+                zoom_slider = gr.Slider(1.0, 4.0, value=2.0, step=0.1, label="PDF 渲染 zoom（大致相当于 DPI/72）")
                 process_image_btn = gr.Button("处理单张图片", variant="primary")
                 process_pdf_btn = gr.Button("处理 PDF", variant="secondary")
 
@@ -456,27 +433,20 @@ def create_demo():
                     return gr.update(visible=(choice == "Custom"))
                 prompt_type.change(fn=update_custom_visible, inputs=[prompt_type], outputs=[custom_prompt])
 
-                def update_poppler_visible(os_choice):
-                    # 这里不做 OS 判断，保留控件以便用户填写
-                    return gr.update(visible=True)
-                # 可按需显示 poppler_path_input
-                # prompt_type.change(fn=update_poppler_visible, inputs=[prompt_type], outputs=[poppler_path_input])
-
             with gr.Column(scale=1):
                 gr.Markdown("### 结果 / Markdown")
                 output_text = gr.Textbox(label="OCR 文本（单图或 PDF 合并）", lines=20, max_lines=500, show_copy_button=True)
                 gallery = gr.Gallery(label="模型输出的图片（patches/crops）", columns=6, type="pil")
                 embed_toggle = gr.Checkbox(label="在 Markdown 中嵌入图片（Base64）", value=True)
-                preserve_size = gr.Checkbox(label="尽量保持原始格式/尺寸（可能导致文件较大）", value=True)
+                preserve_size = gr.Checkbox(label="尽量保持原始格式/尺寸（可能导致文件很大）", value=True)
                 generate_md_btn = gr.Button("生成 Markdown")
                 md_preview = gr.Markdown(label="Markdown 预览", value="")
                 export_md_btn = gr.Button("导出 Markdown (.md)")
                 md_file = gr.File(label="下载生成的 Markdown 文件", interactive=False)
 
-        # state 保存 items（per_page_items）
         per_page_items_state = gr.State([])
 
-        # 处理单图按钮：调用 infer_image_and_collect（直接返回文本与 gallery images，并把 items 存入 state）
+        # 单图处理
         def on_process_image(image, prompt_type, custom_prompt, model_size):
             if image is None:
                 return "请上传图片", [], []
@@ -496,7 +466,6 @@ def create_demo():
             config = size_map.get(model_size, size_map["Gundam (Recommended)"])
             text, items = infer_image_and_collect(image, prompt, config)
             gallery_imgs = [it['pil'] for it in items if it.get('pil') is not None]
-            # per_page_items_state 用于兼容 PDF 流程（单图视为一页）
             return text, gallery_imgs, [items]
 
         process_image_btn.click(
@@ -505,22 +474,21 @@ def create_demo():
             outputs=[output_text, gallery, per_page_items_state]
         )
 
-        # 处理 PDF 按钮
-        def on_process_pdf(pdf_file, prompt_type, custom_prompt, model_size, dpi, poppler_path):
+        # 处理 PDF
+        def on_process_pdf(pdf_file, prompt_type, custom_prompt, model_size, zoom):
             if pdf_file is None:
                 return "请上传 PDF 文件", [], []
-            text, all_items, per_page_items = process_pdf_and_collect(pdf_file, prompt_type, custom_prompt, model_size, dpi=dpi, poppler_path=poppler_path or None)
-            # gallery 显示所有 items 中的 pil
+            text, all_items, per_page_items = process_pdf_and_collect(pdf_file, prompt_type, custom_prompt, model_size, zoom=zoom)
             gallery_imgs = [it['pil'] for it in all_items if it.get('pil') is not None]
             return text, gallery_imgs, per_page_items
 
         process_pdf_btn.click(
             fn=on_process_pdf,
-            inputs=[pdf_input, prompt_type, custom_prompt, model_size, dpi_slider, poppler_path_input],
+            inputs=[pdf_input, prompt_type, custom_prompt, model_size, zoom_slider],
             outputs=[output_text, gallery, per_page_items_state]
         )
 
-        # 生成 Markdown（从 per_page_items_state 生成）
+        # 生成 Markdown
         def on_generate_md(aggregated_text, per_page_items, embed_base64_flag, preserve_size_flag):
             per_page_items = per_page_items or []
             md = build_markdown_from_items_grouped(aggregated_text or "", per_page_items, embed_base64=embed_base64_flag, preserve_size=preserve_size_flag)
@@ -532,7 +500,7 @@ def create_demo():
             outputs=[md_preview]
         )
 
-        # 导出 Markdown（写文件并返回 md 路径）
+        # 导出 Markdown
         def on_export_md(md_str, per_page_items, embed_base64_flag, preserve_size_flag):
             per_page_items = per_page_items or []
             md_path = export_markdown_pdf(md_str, per_page_items, embed_base64=embed_base64_flag)
@@ -549,4 +517,4 @@ def create_demo():
 
 if __name__ == "__main__":
     demo = create_demo()
-    demo.launch(server_name="0.0.0.0", server_port=2714, share=False)
+    demo.launch(server_name="0.0.0.0", server_port=7214, share=False)

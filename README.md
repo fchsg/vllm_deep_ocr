@@ -26,6 +26,7 @@ conda activate deepseek-ocr
 ```Shell
 pip install pylatexenc
 pip install pdf2image
+pip install pymupdf
 pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu118
 pip install vllm-0.8.5+cu118-cp38-abi3-manylinux1_x86_64.whl
 pip install -r requirements.txt

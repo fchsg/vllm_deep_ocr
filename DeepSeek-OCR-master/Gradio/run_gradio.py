@@ -1,5 +1,5 @@
 # run_gradio.py
-# 确保安装依赖：pip install gradio transformers torch pillow pylatexenc
+# 确保已安装依赖：pip install gradio transformers torch pillow pylatexenc
 
 import gradio as gr
 from transformers import AutoModel, AutoTokenizer
@@ -12,12 +12,12 @@ import io
 import base64
 import re
 
-# pylatexenc 用于 LaTeX 转文本
+# pylatexenc 用于 LaTeX -> 可读文本
 try:
     from pylatexenc.latex2text import LatexNodes2Text
 except Exception:
     LatexNodes2Text = None
-    print("警告: pylatexenc 未安装，LaTeX 转文本功能将回退到原文。请执行: pip install pylatexenc")
+    print("警告: pylatexenc 未安装，LaTeX 转文本将回退到原文。可执行: pip install pylatexenc")
 
 # 全局模型变量
 model = None
@@ -25,12 +25,11 @@ tokenizer = None
 
 
 def load_model():
-    """加载 DeepSeek-OCR 模型与 tokenizer（仅加载一次）"""
+    """延迟加载 DeepSeek-OCR 模型与 tokenizer"""
     global model, tokenizer
     if model is None:
         print("Loading DeepSeek-OCR model...")
         model_name = 'deepseek-ai/DeepSeek-OCR'
-
         tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
         model = AutoModel.from_pretrained(
             model_name,
@@ -38,20 +37,16 @@ def load_model():
             trust_remote_code=True,
             use_safetensors=True
         )
-        # 默认使用 CUDA + bfloat16（如需 CPU 请修改）
+        # 默认尝试 GPU + bfloat16；如需改为 CPU，请修改此处
         model = model.eval().cuda().to(torch.bfloat16)
         print("Model loaded successfully!")
     return model, tokenizer
 
 
 # -------------------------
-# 图像与 base64 辅助函数
+# 辅助：PIL Image -> base64 data URI
 # -------------------------
 def pil_image_to_base64_datauri(img: Image.Image, max_width=1200, quality=85, fmt="JPEG"):
-    """
-    将 PIL.Image 转为 base64 data URI。
-    对过宽图片按比例缩放。
-    """
     if img is None:
         return None
     try:
@@ -68,7 +63,6 @@ def pil_image_to_base64_datauri(img: Image.Image, max_width=1200, quality=85, fm
     buf = io.BytesIO()
     save_kwargs = {}
     if img_format == "JPEG":
-        # 处理透明图片
         if img.mode in ("RGBA", "LA"):
             background = Image.new("RGB", img.size, (255, 255, 255))
             background.paste(img, mask=img.split()[3])
@@ -87,21 +81,14 @@ def pil_image_to_base64_datauri(img: Image.Image, max_width=1200, quality=85, fm
 
 
 # -------------------------
-# 从模型输出目录收集碎图（patches）
+# 收集模型输出目录中的碎图（patches）与可视化整图
 # -------------------------
 def collect_patch_images(output_dir, max_patches=16):
-    """
-    在模型输出目录中收集可能的碎图（patches / crops / fragments）。
-    返回 PIL.Image 列表（已 convert("RGB")）。
-    """
     if not output_dir or not os.path.exists(output_dir):
         return []
-
     exts = ('.png', '.jpg', '.jpeg', '.webp')
     keywords = ['patch', 'patches', 'crop', 'crops', 'fragment', 'frag', 'cropbox', 'box', 'crop_img', 'patch_img', 'vis']
     found_paths = []
-
-    # 优先查找包含关键词的文件或目录
     for root, dirs, files in os.walk(output_dir):
         dir_name = os.path.basename(root).lower()
         dir_priority = any(k in dir_name for k in keywords)
@@ -111,17 +98,12 @@ def collect_patch_images(output_dir, max_patches=16):
                 fname = f.lower()
                 if dir_priority or any(k in fname for k in keywords):
                     found_paths.append(full)
-
-    # 回退到任意图片
     if not found_paths:
         for root, dirs, files in os.walk(output_dir):
             for f in files:
                 if f.lower().endswith(exts):
                     found_paths.append(os.path.join(root, f))
-
-    # 去重并按优先级排序（简单）
     unique_paths = list(dict.fromkeys(found_paths))
-
     images = []
     for p in unique_paths:
         try:
@@ -129,16 +111,11 @@ def collect_patch_images(output_dir, max_patches=16):
             images.append(img)
         except Exception:
             continue
-
         if len(images) >= max_patches:
             break
-
     return images
 
 
-# -------------------------
-# 查找模型生成的可视化整图（如果没有则返回 None）
-# -------------------------
 def find_result_image_in_dir(dir_path):
     if not dir_path or not os.path.exists(dir_path):
         return None
@@ -149,7 +126,6 @@ def find_result_image_in_dir(dir_path):
             candidates.append(fname)
     if not candidates:
         return None
-
     preferred_keywords = ['result', 'vis', 'output', 'pred', 'ocr']
     def score(name):
         n = name.lower()
@@ -163,7 +139,6 @@ def find_result_image_in_dir(dir_path):
         except Exception:
             pass
         return s
-
     candidates.sort(key=lambda x: score(x), reverse=True)
     best = candidates[0]
     try:
@@ -189,20 +164,14 @@ def latex_to_readable_text(latex_str: str) -> str:
 
 
 # -------------------------
-# OCR 处理主逻辑（返回可读文本、整图、patches 列表）
+# OCR 处理主逻辑：返回 (readable_text, result_img, patches_list)
 # -------------------------
 def process_image_full(image, prompt_type, custom_prompt, model_size):
-    """
-    对图片进行 OCR：
-      返回 (readable_text, result_img, patches_list)
-    result_img: PIL.Image
-    patches_list: list of PIL.Image
-    """
     try:
         model, tokenizer = load_model()
         temp_dir = tempfile.mkdtemp()
 
-        # 保存上传的输入图像
+        # 保存上传图像
         temp_image_path = os.path.join(temp_dir, "input_image.jpg")
         if isinstance(image, str):
             shutil.copy(image, temp_image_path)
@@ -230,7 +199,7 @@ def process_image_full(image, prompt_type, custom_prompt, model_size):
         }
         config = size_configs.get(model_size, size_configs["Gundam (Recommended)"])
 
-        # 捕获 stdout 执行模型推理
+        # 捕获 stdout 以兼容模型输出到 stdout 的实现
         import sys
         from io import StringIO
         old_stdout = sys.stdout
@@ -252,7 +221,7 @@ def process_image_full(image, prompt_type, custom_prompt, model_size):
 
         captured_text = captured_output.getvalue()
 
-        # 优先读取输出目录中的 txt 文件
+        # 优先读取 output txt 文件
         ocr_text = ""
         for filename in os.listdir(temp_dir):
             if filename.endswith('.txt'):
@@ -262,7 +231,7 @@ def process_image_full(image, prompt_type, custom_prompt, model_size):
                 except Exception:
                     pass
 
-        # 如果没有 txt，再解析 captured_text
+        # 若无 txt，则解析 captured_text
         if not ocr_text.strip() and captured_text.strip():
             lines = captured_text.split('\n')
             clean_lines = []
@@ -285,14 +254,14 @@ def process_image_full(image, prompt_type, custom_prompt, model_size):
 
         readable = latex_to_readable_text(ocr_text) if ocr_text else ""
 
-        # 查找模型产生的整图与碎图
+        # 查找模型输出整图与碎图
         result_img = find_result_image_in_dir(temp_dir)
         if result_img is None:
             result_img = input_pil
 
         patches = collect_patch_images(temp_dir, max_patches=32)
 
-        # 删除临时目录（图片已加载进内存）
+        # 清理临时目录（图片已加载到内存）
         try:
             shutil.rmtree(temp_dir)
         except Exception:
@@ -307,85 +276,78 @@ def process_image_full(image, prompt_type, custom_prompt, model_size):
 
 
 # -------------------------
-# 生成 Markdown（包含整图与碎图）
+# 构建 Markdown（包含整图与碎图，碎图以 base64 嵌入）
 # -------------------------
-def build_markdown_with_patches(readable_text: str, result_img, patches, embed_base64=True, max_width=1200, patch_max_width=600, quality=85):
+def images_to_base64_list(images, max_width=600, quality=85, fmt="JPEG"):
+    uris = []
+    if not images:
+        return uris
+    for img in images:
+        try:
+            if isinstance(img, str) and os.path.exists(img):
+                pil_img = Image.open(img).convert("RGB")
+            else:
+                pil_img = img
+            uri = pil_image_to_base64_datauri(pil_img, max_width=max_width, quality=quality, fmt=fmt)
+            if uri:
+                uris.append(uri)
+        except Exception:
+            continue
+    return uris
+
+
+def build_markdown_with_patches(readable_text: str, result_img, patches_images=None, patches_base64=None,
+                                embed_base64=True, max_width=1200, patch_max_width=600, quality=85):
+    if patches_base64 is None and patches_images:
+        patches_base64 = images_to_base64_list(patches_images, max_width=patch_max_width, quality=quality)
     md = []
     md.append("# OCR 结果\n")
     md.append("## 文本\n")
     md.append(readable_text or "*未识别到文本*")
     md.append("\n---\n")
     md.append("## OCR 可视化\n")
-
-    # 整图
     if result_img is not None:
         if embed_base64:
-            try:
-                data_uri = pil_image_to_base64_datauri(result_img, max_width=max_width, quality=quality)
-                if data_uri:
-                    md.append(f"![OCR 全图]({data_uri})\n")
-                else:
-                    md.append("![OCR 全图](ocr_result.jpg)\n")
-            except Exception:
+            data_uri = pil_image_to_base64_datauri(result_img, max_width=max_width, quality=quality)
+            if data_uri:
+                md.append(f"![OCR 全图]({data_uri})\n")
+            else:
                 md.append("![OCR 全图](ocr_result.jpg)\n")
         else:
             md.append("![OCR 全图](ocr_result.jpg)\n")
     else:
         md.append("_无 OCR 可视化图_\n")
-
     md.append("\n---\n")
-    md.append(f"## 碎图（共 {len(patches)} 张）\n")
-
-    if not patches:
+    md.append(f"## 碎图（共 {len(patches_base64) if patches_base64 else (len(patches_images) if patches_images else 0)} 张）\n")
+    if not patches_base64:
         md.append("_无碎图_\n")
     else:
-        for idx, p in enumerate(patches, start=1):
+        for idx, uri in enumerate(patches_base64, start=1):
             md.append(f"### 碎图 {idx}\n")
-            if embed_base64:
-                try:
-                    data_uri = pil_image_to_base64_datauri(p, max_width=patch_max_width, quality=quality)
-                    if data_uri:
-                        md.append(f"![patch_{idx}]({data_uri})\n")
-                    else:
-                        md.append(f"![patch_{idx}](patch_{idx}.jpg)\n")
-                except Exception:
-                    md.append(f"![patch_{idx}](patch_{idx}.jpg)\n")
-            else:
-                md.append(f"![patch_{idx}](patch_{idx}.jpg)\n")
-            md.append("\n")
+            md.append(f"![patch_{idx}]({uri})\n\n")
     return "\n".join(md)
 
 
 # -------------------------
-# 导出 Markdown 与图片（支持 embed 或 不 embed）
+# 导出 Markdown（支持嵌入或不嵌入）
 # -------------------------
-def export_markdown_with_patches(markdown_text: str, result_img, patches, embed_base64=True, patch_max_width=600, quality=85):
-    """
-    将 Markdown 导出到临时目录并返回 .md 路径（供 gr.File 下载）。
-    - embed_base64 True: .md 已包含图片 data URI（直接写出 markdown_text 即可）
-    - embed_base64 False: 会把 result_img 与 patches 单独保存为 jpg，markdown 中引用相对文件名
-    """
+def export_markdown_with_patches(markdown_text: str, result_img, patches, embed_base64=True, quality=85):
     try:
         temp_dir = tempfile.mkdtemp()
         md_path = os.path.join(temp_dir, "result.md")
-
         if not embed_base64:
-            # 保存整图
             if result_img is not None:
                 try:
                     result_img.save(os.path.join(temp_dir, "ocr_result.jpg"), quality=quality)
                 except Exception:
                     pass
-            # 保存 patches
             for idx, p in enumerate(patches, start=1):
                 try:
                     p.save(os.path.join(temp_dir, f"patch_{idx}.jpg"), quality=quality)
                 except Exception:
                     pass
-
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(markdown_text or "")
-
         return md_path
     except Exception as e:
         print(f"导出失败: {e}")
@@ -393,75 +355,55 @@ def export_markdown_with_patches(markdown_text: str, result_img, patches, embed_
 
 
 # -------------------------
-# Gradio 界面
+# Gradio 界面（简洁布局）
 # -------------------------
 def create_demo():
-    with gr.Blocks(title="DeepSeek-OCR Demo", theme=gr.themes.Soft()) as demo:
-        gr.Markdown(
-            """
-            # 🔍 DeepSeek-OCR
+    with gr.Blocks(title="DeepSeek-OCR", theme=gr.themes.Soft()) as demo:
+        gr.Markdown("# 🔍 DeepSeek-OCR\n上传图片并生成可读文本、结果图与碎图，支持导出 Markdown（碎图以 base64 嵌入）")
 
-            上传包含文本的图片（文档，手写，表格等），示例支持 Markdown 转换与导出。
-            """
-        )
         with gr.Row():
             with gr.Column(scale=1):
-                gr.Markdown("### 📤 Input")
-                image_input = gr.Image(label="Upload Image", type="pil", sources=["upload", "clipboard"])
-
-                gr.Markdown("### ⚙️ Settings")
-                prompt_type = gr.Radio(
-                    choices=["Free OCR", "Markdown Conversion", "Custom"],
-                    value="Markdown Conversion",
-                    label="Prompt Type"
-                )
+                gr.Markdown("### 📤 Input & Settings")
+                image_input = gr.Image(label="Upload Image", type="pil", source="upload")
+                prompt_type = gr.Radio(choices=["Free OCR", "Markdown Conversion", "Custom"],
+                                       value="Markdown Conversion", label="Prompt Type")
                 custom_prompt = gr.Textbox(label="Custom Prompt (if selected)", placeholder="Enter custom prompt...", lines=2, visible=False)
+                model_size = gr.Radio(choices=["Tiny", "Small", "Base", "Large", "Gundam (Recommended)"],
+                                      value="Gundam (Recommended)", label="Model Size")
+                process_btn = gr.Button("🚀 Process Image", variant="primary")
 
-                model_size = gr.Radio(
-                    choices=["Tiny", "Small", "Base", "Large", "Gundam (Recommended)"],
-                    value="Gundam (Recommended)",
-                    label="Model Size"
-                )
-
-                process_btn = gr.Button("🚀 Process Image", variant="primary", size="lg")
-
-                gr.Markdown("""
-                ### 💡 Tips
-                - 先点击 Process Image 获取 Results（可读文本 + OCR 可视化 + 碎图画廊）
-                - 再点击生成/导出 Markdown
-                """)
+                # 控制 custom_prompt 可见性
+                def update_prompt_visibility(choice):
+                    return gr.update(visible=(choice == "Custom"))
+                prompt_type.change(fn=update_prompt_visibility, inputs=[prompt_type], outputs=[custom_prompt])
 
             with gr.Column(scale=1):
                 gr.Markdown("### 📄 Results")
-                output_text = gr.Textbox(label="Extracted Text (readable)", lines=20, max_lines=50, show_copy_button=True)
+                output_text = gr.Textbox(label="Extracted Text (readable)", lines=20, max_lines=60, show_copy_button=True)
                 result_image = gr.Image(label="Result Image (OCR visualization)", type="pil")
                 patches_gallery = gr.Gallery(label="碎图 (patches / crops)", columns=6, type="pil")
 
-                gr.Markdown("### 📝 Markdown / Export")
+                gr.Markdown("### 📝 Markdown & Export")
                 readable_toggle = gr.Checkbox(label="将 LaTeX 转换为可读文本（pylatexenc）", value=True)
                 embed_toggle = gr.Checkbox(label="在 Markdown 中嵌入图片（Base64）", value=True)
-                generate_md_btn = gr.Button("📝 生成 Markdown", variant="secondary")
+                generate_md_btn = gr.Button("📝 生成 Markdown")
                 md_preview = gr.Markdown(label="Markdown 预览", value="")
-                export_md_btn = gr.Button("💾 导出 Markdown (.md)", variant="secondary")
+                export_md_btn = gr.Button("💾 导出 Markdown (.md)")
                 md_file = gr.File(label="下载生成的 Markdown 文件", interactive=False)
 
-        # 控制 custom_prompt 可见性
-        def update_prompt_visibility(choice):
-            return gr.update(visible=(choice == "Custom"))
-        prompt_type.change(fn=update_prompt_visibility, inputs=[prompt_type], outputs=[custom_prompt])
-
-        # 处理图像 -> 返回文本, 整图, patches 列表
+        # Process -> 返回文本, 整图, patches
         process_btn.click(
             fn=process_image_full,
             inputs=[image_input, prompt_type, custom_prompt, model_size],
             outputs=[output_text, result_image, patches_gallery]
         )
 
-        # 生成 Markdown（使用 process 的输出）
+        # 生成 Markdown（将 patches 以 base64 嵌入）
         def to_md(text_result, result_img, patches_list, use_readable, embed_base64):
-            # text_result 已为可读文本（process_image_full 已做转换）
-            patches = patches_list or []
-            md = build_markdown_with_patches(text_result, result_img, patches, embed_base64=embed_base64)
+            # process_image_full 已返回可读文本（latex 已转换）；这里直接使用 text_result
+            patches_images = patches_list or []
+            md = build_markdown_with_patches(text_result, result_img, patches_images=patches_images,
+                                             patches_base64=None, embed_base64=embed_base64)
             return md
 
         generate_md_btn.click(
@@ -470,10 +412,10 @@ def create_demo():
             outputs=[md_preview]
         )
 
-        # 导出 Markdown（返回 md 文件路径供下载）
+        # 导出 Markdown（返回 md 文件路径以供下载）
         def export_md(md_str, result_img, patches_list, embed_base64):
-            patches = patches_list or []
-            md_path = export_markdown_with_patches(md_str, result_img, patches, embed_base64=embed_base64)
+            patches_images = patches_list or []
+            md_path = export_markdown_with_patches(md_str, result_img, patches_images, embed_base64=embed_base64)
             return md_path
 
         export_md_btn.click(

@@ -1,4 +1,6 @@
-# 确保安装了gradio，用pip install gradio
+# run_gradio.py
+# 确保安装了 gradio，用 pip install gradio
+# 确保安装 pylatexenc 用于 LaTeX 转文本：pip install pylatexenc
 
 import gradio as gr
 from transformers import AutoModel, AutoTokenizer
@@ -7,6 +9,8 @@ import os
 from PIL import Image
 import tempfile
 import shutil
+import io
+import base64
 
 # pylatexenc 用于 LaTeX 转文本
 try:
@@ -152,8 +156,9 @@ def process_image(image, prompt_type, custom_prompt, model_size):
 
 
 # =========================
-# 新增：LaTeX 转文本与 Markdown 构建/导出工具函数
+# 新增：LaTeX 转文本与 Markdown 构建/导出工具函数（含 base64 嵌入）
 # =========================
+
 def latex_to_readable_text(latex_str: str) -> str:
     """
     使用 pylatexenc 将 LaTeX 转换为可读纯文本。
@@ -167,14 +172,55 @@ def latex_to_readable_text(latex_str: str) -> str:
         return latex_str
 
 
-def build_markdown_with_image(readable_text: str, image_obj) -> str:
+def pil_image_to_base64_datauri(img: Image.Image, max_width=1200, quality=85, fmt="JPEG"):
+    """
+    将 PIL Image 转为 base64 data URI（默认 JPEG）。
+    - max_width: 若图片宽度大于该值，将按比例缩放
+    - quality: JPEG 压缩质量（0-100）
+    返回 data uri 字符串，例如 "data:image/jpeg;base64,...."
+    """
+    if img is None:
+        return None
+    # 确保为 PIL.Image
+    try:
+        w, h = img.size
+    except Exception:
+        return None
+
+    # 缩放（仅宽度）
+    if max_width and w > max_width:
+        new_w = max_width
+        new_h = int(h * (new_w / w))
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+
+    img_format = fmt.upper()
+    buf = io.BytesIO()
+    # 对 PNG 或透明图片，若需要保留透明度可使用 PNG
+    save_kwargs = {}
+    if img_format == "JPEG":
+        # convert to RGB to avoid 保存 RGBA 导致错误
+        if img.mode in ("RGBA", "LA"):
+            background = Image.new("RGB", img.size, (255, 255, 255))
+            background.paste(img, mask=img.split()[3])  # 3 is alpha
+            img_to_save = background
+        else:
+            img_to_save = img.convert("RGB")
+        save_kwargs["quality"] = quality
+    else:
+        img_to_save = img
+
+    img_to_save.save(buf, format=img_format, **save_kwargs)
+    b = buf.getvalue()
+    encoded = base64.b64encode(b).decode("ascii")
+    mime = "image/jpeg" if img_format == "JPEG" else f"image/{img_format.lower()}"
+    return f"data:{mime};base64,{encoded}"
+
+
+def build_markdown_with_image(readable_text: str, image_obj, embed_base64=True, max_width=1200, quality=85):
     """
     生成包含文本与图片的 Markdown。
-    - readable_text: 已转换为可读文本的结果
-    - image_obj: 来自 gr.Image 的 PIL Image 或者路径
-    策略：
-      1) 至少嵌入用户上传的图片，满足“如果处理的图片中包含图片，返回markdown中需要包含图片”。
-      2) 若后续需要插入文档内部图片，请在 infer 阶段保留图片列表与位置信息再扩展。
+    - 如果 embed_base64=True，会将输入图片编码为 base64 data URI 并直接嵌入 Markdown。
+    - 否则使用相对路径 'input_image.jpg'（需配合导出时打包图片）。
     """
     md_parts = []
     md_parts.append("# OCR 结果")
@@ -185,34 +231,52 @@ def build_markdown_with_image(readable_text: str, image_obj) -> str:
     md_parts.append("")
     md_parts.append("## 图片")
     md_parts.append("")
-    # 由导出函数写入 input_image.jpg，在此使用固定相对路径
-    md_parts.append("![输入图片](input_image.jpg)")
+
+    if image_obj is None:
+        md_parts.append("_无上传图片_")
+    else:
+        if embed_base64:
+            # 如果 image_obj 是路径则先打开
+            try:
+                if isinstance(image_obj, str) and os.path.exists(image_obj):
+                    pil_img = Image.open(image_obj)
+                else:
+                    pil_img = image_obj  # 期望是 PIL.Image
+                data_uri = pil_image_to_base64_datauri(pil_img, max_width=max_width, quality=quality)
+                if data_uri:
+                    md_parts.append(f"![输入图片]({data_uri})")
+                else:
+                    md_parts.append("![输入图片](input_image.jpg)")
+            except Exception:
+                md_parts.append("![输入图片](input_image.jpg)")
+        else:
+            md_parts.append("![输入图片](input_image.jpg)")
+
     md_parts.append("")
     return "\n".join(md_parts)
 
 
-def export_markdown(markdown_text: str, image_obj):
+def export_markdown(markdown_text: str, image_obj, embed_base64=True, max_width=1200, quality=85):
     """
     将 Markdown 与图片导出到本地临时目录，并返回 .md 文件路径用于下载。
-    - 在临时目录写入 input_image.jpg 和 result.md
-    - Gradio 的 File 组件接收 .md 文件路径以供下载
+    - 当 embed_base64=True 时，Markdown 中已嵌入图片，无需单独保存图片（.md 即包含图像）
+    - 当 embed_base64=False 时，会把图片保存为 input_image.jpg 与 result.md 同目录
+    注意：将 base64 嵌入 .md 会使文件更大，但能保证 Gradio 前端预览正常。
     """
     try:
         temp_dir = tempfile.mkdtemp()
         md_path = os.path.join(temp_dir, "result.md")
-        img_path = os.path.join(temp_dir, "input_image.jpg")
 
-        # 保存图片
-        if image_obj is not None:
-            if isinstance(image_obj, str) and os.path.exists(image_obj):
-                shutil.copy(image_obj, img_path)
-            else:
-                # 尝试作为 PIL.Image 保存
-                try:
+        # 如果不嵌入，需要把图片存为 input_image.jpg
+        if not embed_base64 and image_obj is not None:
+            img_path = os.path.join(temp_dir, "input_image.jpg")
+            try:
+                if isinstance(image_obj, str) and os.path.exists(image_obj):
+                    shutil.copy(image_obj, img_path)
+                else:
                     image_obj.save(img_path)
-                except Exception:
-                    # 非 PIL.Image 类型，则不保存图片
-                    pass
+            except Exception as e:
+                print(f"保存图片失败: {e}")
 
         # 写入 Markdown
         with open(md_path, "w", encoding="utf-8") as f:
@@ -220,7 +284,6 @@ def export_markdown(markdown_text: str, image_obj):
 
         return md_path
     except Exception as e:
-        # 返回 None 让 File 不显示，同时可在 UI 上提示
         print(f"导出失败: {e}")
         return None
 
@@ -311,6 +374,11 @@ def create_demo():
                     value=True,
                     info="开启后将使用 pylatexenc 把 LaTeX 转为普通文本"
                 )
+                embed_toggle = gr.Checkbox(
+                    label="在 Markdown 中嵌入图片（Base64）",
+                    value=True,
+                    info="开启后图片会以 base64 data URI 嵌入 Markdown，前端可以直接预览"
+                )
                 generate_md_btn = gr.Button("📝 生成 Markdown", variant="secondary")
                 md_preview = gr.Markdown(label="Markdown 预览", value="")
                 export_md_btn = gr.Button("💾 导出 Markdown", variant="secondary")
@@ -320,7 +388,7 @@ def create_demo():
                     """
                     ### 📥 Export
                     1) 点击“生成 Markdown”预览文本与图片
-                    2) 点击“导出 Markdown”保存至本地临时目录并下载 .md 文件（包含图片）
+                    2) 点击“导出 Markdown”保存至本地临时目录并下载 .md 文件（包含图片或与图片配套）
                     """
                 )
 
@@ -342,34 +410,34 @@ def create_demo():
         )
 
         # 生成 Markdown 逻辑
-        def to_readable_and_md(text_result, image_obj, use_readable):
+        def to_readable_and_md(text_result, image_obj, use_readable, embed_base64):
             """
-            将文本（可能为 LaTeX）转换为可读文本，并生成 Markdown 预览。
+            将文本（可能为 LaTeX）转换为可读文本，并生成 Markdown 预览（默认嵌入 base64）。
             """
             try:
                 readable = latex_to_readable_text(text_result) if use_readable else text_result
-                md_str = build_markdown_with_image(readable, image_obj)
+                md_str = build_markdown_with_image(readable, image_obj, embed_base64=embed_base64)
                 return md_str
             except Exception as e:
                 return f"生成 Markdown 失败：{e}"
 
         generate_md_btn.click(
             fn=to_readable_and_md,
-            inputs=[output_text, image_input, readable_toggle],
+            inputs=[output_text, image_input, readable_toggle, embed_toggle],
             outputs=[md_preview]
         )
 
         # 导出 Markdown 逻辑
-        def on_export_md(md_str, image_obj):
+        def on_export_md(md_str, image_obj, embed_base64):
             """
             导出 Markdown 到临时目录并返回下载文件。
             """
-            file_path = export_markdown(md_str, image_obj)
+            file_path = export_markdown(md_str, image_obj, embed_base64=embed_base64)
             return file_path
 
         export_md_btn.click(
             fn=on_export_md,
-            inputs=[md_preview, image_input],
+            inputs=[md_preview, image_input, embed_toggle],
             outputs=[md_file]
         )
 
@@ -408,4 +476,4 @@ def create_demo():
 if __name__ == "__main__":
     demo = create_demo()
     # 允许本地访问，可按需修改 server_name/port
-    demo.launch(server_name="0.0.0.0", server_port=7860, share=False)
+    demo.launch(server_name="0.0.0.0", server_port=2714, share=False)

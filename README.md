@@ -34,6 +34,15 @@ pip install flash-attn==2.7.3 --no-build-isolation
 ``` bash 
 pip install gradio
 python ~/vllm_deep_ocr/DeepSeek-OCR-master/Gradio/run_gradio.py
+
+关闭gradio
+执行：
+lsof -i:2714
+输出示例：
+python3   12345 nx   3u  IPv4 1234567  0t0  TCP *:2714 (LISTEN)
+然后执行：
+kill -9 12345
+
 ```
 
 ## vLLM-Inference

@@ -151,7 +151,7 @@ def create_demo():
     with gr.Blocks(title="DeepSeek-OCR Demo", theme=gr.themes.Soft()) as demo:
         gr.Markdown(
             """
-            # 🔍 DeepSeek-OCR Demo
+            # 🔍 DeepSeek-OCR
 
             Upload an image containing text, documents, charts, or tables to extract text using DeepSeek-OCR.
 

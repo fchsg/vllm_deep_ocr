@@ -30,7 +30,11 @@ pip install vllm-0.8.5+cu118-cp38-abi3-manylinux1_x86_64.whl
 pip install -r requirements.txt
 pip install flash-attn==2.7.3 --no-build-isolation
 ```
-**Note:** if you want vLLM and transformers codes to run in the same environment, you don't need to worry about this installation error like: vllm 0.8.5+cu118 requires transformers>=4.51.1
+## gradio
+``` bash 
+pip install gradio
+python ~/vllm_deep_ocr/DeepSeek-OCR-master/Gradio/run_gradio.py
+```
 
 ## vLLM-Inference
 - VLLM:

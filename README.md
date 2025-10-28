@@ -18,11 +18,12 @@ git pull
 2. Conda
 ```Shell
 conda create -n deepseek-ocr python=3.12.9 -y
-conda activate deepseek-ocr
+conda activate deepseek-ocr 激活conda
+conda info --env 查看虚拟环境
+conda deactivate 退出当前虚拟环境
 ```
 3. Packages
 
-- download the vllm-0.8.5 [whl](https://github.com/vllm-project/vllm/releases/tag/v0.8.5) 
 ```Shell
 pip install pylatexenc
 pip install pdf2image
